@@ -7,7 +7,14 @@ from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, START, END
 
-from utils import extract_text_from_pdf, search_all_jobs, apply_to_job
+from utils import (
+    extract_text_from_pdf,
+    search_all_jobs,
+    apply_to_job,
+    score_jobs,
+    send_job_alert_email,
+    _resume_id,
+)
 
 load_dotenv()
 
@@ -122,6 +129,10 @@ def find_jobs(state: JobHunterState) -> JobHunterState:
     try:
         jobs = search_all_jobs(query)
         logger.info("Found %d jobs for query: %s", len(jobs), query)
+        # Score jobs against resume
+        resume_text = state.get("resume_text", "")
+        if resume_text and jobs:
+            jobs = score_jobs(jobs, resume_text)
         return {**state, "jobs": jobs, "error": ""}
     except Exception as exc:
         logger.exception("Job search failed")
@@ -151,6 +162,12 @@ def apply_jobs(state: JobHunterState) -> JobHunterState:
     if errors:
         logger.warning("%d application(s) failed", len(errors))
     logger.info("Applied to %d / %d jobs", len(applications), len(jobs))
+
+    # Send email notification if configured
+    query = state.get("search_query", "")
+    if applications and query:
+        send_job_alert_email(query, len(jobs), len(applications))
+
     return {**state, "applications": applications, "error": ""}
 
 

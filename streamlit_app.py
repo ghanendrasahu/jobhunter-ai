@@ -1,4 +1,4 @@
-"""Streamlit UI for JobHunter AI — upload a PDF, find Indian jobs, track applications."""
+"""JobHunter AI — Streamlit dashboard for resume-based Indian job search with analytics."""
 
 import json
 import os
@@ -7,6 +7,9 @@ import time
 from pathlib import Path
 
 import streamlit as st
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 
 from agent import run_job_hunter
 from utils import (
@@ -14,293 +17,246 @@ from utils import (
     save_applied_jobs,
     get_application_history,
     list_all_histories,
+    list_resumes,
+    save_resume,
+    delete_resume,
     _resume_id,
+    _resume_id_from_file,
+    export_history_csv,
+    get_analytics_data,
+    open_all_portals,
+    send_job_alert_email,
+    build_portal_urls,
 )
 
 # ---------------------------------------------------------------------------
 # Page config
 # ---------------------------------------------------------------------------
 st.set_page_config(
-    page_title="JobHunter AI — India Jobs",
+    page_title="JobHunter AI",
     page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 # ---------------------------------------------------------------------------
-# Sidebar — Application History
+# Sidebar
 # ---------------------------------------------------------------------------
 with st.sidebar:
-    st.markdown("## 📋 Application History")
+    st.markdown("## 🤖 JobHunter AI")
+    st.markdown("### 📋 Application History")
+
     histories = list_all_histories()
+    total_applied = sum(len(h.get("applied_job_ids", [])) for h in histories)
+    st.metric("Total Applications", total_applied)
+
     if histories:
         for h in histories:
             rid = h.get("resume_id", "?")
             count = len(h.get("applied_job_ids", []))
-            st.markdown(f"- **Resume `{rid}`**: {count} job(s) applied")
+            st.markdown(f"- `{rid}`: {count} job(s)")
     else:
-        st.info("No applications yet. Upload a resume to start!")
+        st.info("No applications yet.")
 
     st.markdown("---")
-    st.markdown("### 🔗 Real Job Portals")
-    st.markdown(
-        """
-        The app opens these portals **directly in your browser**
-        with your search query pre-filled. You apply using your
-        own logged-in accounts — no API keys needed!
-        
-        - 🟠 **Naukri** — Indian IT jobs
-        - 🔵 **Indeed** — Indian job board
-        - 🟣 **LinkedIn** — Professional network
-        - 🟤 **Monster** — Indian job portal
-        - 🔴 **TimesJobs** — Indian job portal
-        - 🟧 **Shine** — Indian job portal
-        - 🔍 **Google Jobs** — Aggregates all sources
-        """
+    page = st.radio(
+        "Navigate",
+        ["🎯 Job Search", "📊 Dashboard", "📝 Resumes", "⚙️ Settings"],
+        label_visibility="collapsed",
     )
+
     st.markdown("---")
-    st.markdown(
-        "💡 **How it works:**\n\n"
-        "1. Upload your resume\n"
-        "2. Click 'Run Pipeline'\n"
-        "3. Portal links open in your browser tabs\n"
-        "4. You're already logged in — just apply!\n\n"
-        "✅ Applied jobs are tracked so you never apply twice."
-    )
-    st.markdown("---")
-    st.markdown("---")
-    if st.button("🗑️ Clear All History", type="secondary"):
-        history_dir = Path("history")
-        if history_dir.exists():
-            for p in history_dir.glob("*.json"):
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🗑️ Clear History", use_container_width=True):
+            for p in Path("history").glob("*.json"):
                 p.unlink()
-            st.success("History cleared!")
             st.rerun()
+    with col2:
+        if histories:
+            csv_data = export_history_csv()
+            st.download_button(
+                "📥 Export CSV",
+                data=csv_data,
+                file_name="jobhunter_history.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
 
 
 # ---------------------------------------------------------------------------
-# Custom CSS
+# CSS
 # ---------------------------------------------------------------------------
 st.markdown(
     """
 <style>
-    .main-header {
-        font-size: 2.5rem;
-        font-weight: 700;
-        margin-bottom: 0.25rem;
-    }
-    .sub-header {
-        font-size: 1.1rem;
-        color: #6c757d;
-        margin-bottom: 2rem;
-    }
-    .stat-card {
-        background: #f0f2f6;
-        border-radius: 12px;
-        padding: 1.2rem 1.5rem;
-        text-align: center;
-    }
-    .stat-number {
-        font-size: 2rem;
-        font-weight: 700;
-        color: #0d6efd;
-    }
-    .stat-label {
-        font-size: 0.85rem;
-        color: #6c757d;
-        margin-top: 0.2rem;
-    }
-    .job-card {
-        background: #ffffff;
-        border: 1px solid #e0e0e0;
-        border-radius: 10px;
-        padding: 1.2rem 1.5rem;
-        margin-bottom: 1rem;
-    }
-    .job-title {
-        font-size: 1.15rem;
-        font-weight: 600;
-    }
-    .job-company {
-        color: #0d6efd;
-        font-weight: 500;
-    }
-    .job-meta {
-        font-size: 0.85rem;
-        color: #6c757d;
-    }
-    .source-badge {
-        display: inline-block;
-        padding: 0.2rem 0.6rem;
-        border-radius: 12px;
-        font-size: 0.75rem;
-        font-weight: 600;
-        color: #fff;
-    }
-    .source-naukri  { background: #e9692c; }
-    .source-indeed  { background: #2164f3; }
-    .source-linkedin { background: #0a66c2; }
-    .source-adzuna  { background: #6c757d; }
-    .app-badge {
-        display: inline-block;
-        padding: 0.2rem 0.7rem;
-        border-radius: 20px;
-        font-size: 0.8rem;
-        font-weight: 500;
-    }
-    .applied         { background: #d1e7dd; color: #0f5132; }
-    .already_applied { background: #fff3cd; color: #664d03; }
-    .error-box {
-        background: #f8d7da;
-        color: #842029;
-        border: 1px solid #f5c2c7;
-        border-radius: 8px;
-        padding: 1rem;
-    }
-    .resume-preview {
-        background: #f8f9fa;
-        border-radius: 8px;
-        padding: 1rem;
-        font-size: 0.85rem;
-        max-height: 300px;
-        overflow-y: auto;
-        white-space: pre-wrap;
-        font-family: monospace;
-    }
-    .salary-inr {
-        font-weight: 500;
-        color: #198754;
-    }
-    footer { display: none; }
+.job-card {
+    background: #ffffff;
+    border: 1px solid #e0e0e0;
+    border-radius: 10px;
+    padding: 1rem 1.2rem;
+    margin-bottom: 0.8rem;
+}
+.score-badge {
+    display: inline-block;
+    padding: 0.2rem 0.6rem;
+    border-radius: 20px;
+    font-size: 0.8rem;
+    font-weight: 700;
+}
+.score-high { background: #d1e7dd; color: #0f5132; }
+.score-mid  { background: #fff3cd; color: #664d03; }
+.score-low  { background: #f8d7da; color: #842029; }
+.source-tag {
+    display: inline-block;
+    padding: 0.15rem 0.5rem;
+    border-radius: 10px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: #fff;
+}
+.source-naukri  { background: #e9692c; }
+.source-indeed  { background: #2164f3; }
+.source-linkedin { background: #0a66c2; }
+.source-monster { background: #6c2bd9; }
+.source-adzuna  { background: #6c757d; }
+.source-jooble  { background: #198754; }
+.skill-match { color: #198754; font-weight: 500; }
+.skill-missing { color: #dc3545; }
+.resume-card {
+    background: #f8f9fa;
+    border-radius: 8px;
+    padding: 0.8rem 1rem;
+    margin-bottom: 0.5rem;
+}
 </style>
 """,
     unsafe_allow_html=True,
 )
 
 
-# ---------------------------------------------------------------------------
-# Header
-# ---------------------------------------------------------------------------
-st.markdown('<div class="main-header">🤖 JobHunter AI — India</div>', unsafe_allow_html=True)
-st.markdown(
-    '<div class="sub-header">Upload your resume PDF — AI extracts skills, finds Indian jobs from Naukri, Indeed, LinkedIn, and tracks what you applied to.</div>',
-    unsafe_allow_html=True,
-)
+# ===========================================================================
+# PAGE: JOB SEARCH
+# ===========================================================================
+if page == "🎯 Job Search":
+    st.markdown("## 🎯 Job Search")
+    st.markdown("Upload your resume to find matching Indian jobs with AI-powered scoring.")
 
-# ---------------------------------------------------------------------------
-# File upload
-# ---------------------------------------------------------------------------
-uploaded_file = st.file_uploader(
-    "Choose a PDF resume",
-    type=["pdf"],
-    accept_multiple_files=False,
-    help="Upload a PDF file (max 10 MB).",
-)
+    # Resume selection / upload
+    saved = list_resumes()
+    resume_source = st.radio(
+        "Resume source",
+        ["Upload new PDF", "Use saved resume"],
+        horizontal=True,
+    )
 
-if uploaded_file is not None:
-    if uploaded_file.size > 10 * 1024 * 1024:
-        st.error("File too large. Maximum size is 10 MB.")
-        st.stop()
+    resume_text = ""
+    file_path = ""
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-        tmp.write(uploaded_file.getvalue())
-        tmp_path = tmp.name
+    if resume_source == "Upload new PDF":
+        uploaded = st.file_uploader("Choose a PDF resume", type=["pdf"])
+        if uploaded:
+            if uploaded.size > 10 * 1024 * 1024:
+                st.error("Max 10 MB")
+                st.stop()
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                tmp.write(uploaded.getvalue())
+                tmp_path = tmp.name
+            file_path = tmp_path
+            st.success(f"✅ {uploaded.name} ({uploaded.size/1024:.0f} KB)")
 
-    st.success(f"✅ Uploaded **{uploaded_file.name}** ({uploaded_file.size / 1024:.1f} KB)")
+            col1, col2 = st.columns([3, 1])
+            with col2:
+                name = st.text_input("Save as (optional)")
+                if st.button("💾 Save Resume") and name:
+                    save_resume(tmp_path, name)
+                    st.rerun()
+    else:
+        if saved:
+            resume_names = {f"{r['name']} ({r['id'][:8]})": r for r in saved}
+            selected = st.selectbox("Select saved resume", list(resume_names.keys()))
+            resume_meta = resume_names[selected]
+            file_path = resume_meta["file_path"]
+            st.info(f"📄 {resume_meta['name']} — {resume_meta.get('applied_count', 0)} previous applications")
+        else:
+            st.warning("No saved resumes. Upload one first.")
 
-    if st.button("🚀 Run Job Hunter Pipeline", type="primary", use_container_width=True):
-        with st.spinner("Running pipeline: extracting resume → generating query → searching jobs → applying..."):
-            progress_bar = st.progress(0, text="Starting...")
-
+    # Run pipeline
+    if file_path and st.button("🚀 Run Job Hunter Pipeline", type="primary", use_container_width=True):
+        with st.spinner("Running pipeline..."):
+            bar = st.progress(0, text="Extracting resume...")
             try:
-                for pct, msg in [
+                steps = [
                     (10, "Extracting text from PDF..."),
-                    (30, "Generating job search query..."),
-                    (55, "Searching Naukri, Indeed, LinkedIn for Indian jobs..."),
-                    (80, "Applying to jobs (skipping duplicates)..."),
+                    (25, "Generating search query..."),
+                    (50, "Scraping Indeed, LinkedIn, Naukri..."),
+                    (70, "Scoring jobs against your resume..."),
+                    (90, "Recording applications..."),
                     (100, "Done!"),
-                ]:
-                    time.sleep(0.4)
-                    progress_bar.progress(pct, text=msg)
+                ]
+                for pct, msg in steps:
+                    time.sleep(0.3)
+                    bar.progress(pct, text=msg)
 
-                result = run_job_hunter(tmp_path)
-                progress_bar.empty()
+                result = run_job_hunter(file_path)
+                bar.empty()
             except Exception as exc:
-                progress_bar.empty()
+                bar.empty()
                 st.error(f"Pipeline failed: {exc}")
                 st.stop()
             finally:
-                try:
-                    os.unlink(tmp_path)
-                except Exception:
-                    pass
+                if resume_source == "Upload new PDF":
+                    try:
+                        os.unlink(file_path)
+                    except Exception:
+                        pass
 
-        # ------------------------------------------------------------------
-        # Results
-        # ------------------------------------------------------------------
         st.markdown("---")
         st.markdown("## 📊 Results")
 
         if result.get("error"):
-            st.markdown(f'<div class="error-box">⚠️ {result["error"]}</div>', unsafe_allow_html=True)
+            st.error(f"⚠️ {result['error']}")
         else:
             resume_text = result.get("resume_text", "")
             rid = _resume_id(resume_text)
-
-            # Stats row
             jobs = result.get("jobs", [])
             apps = result.get("applications", [])
+            query = result.get("search_query", "")
+
             applied_count = sum(1 for a in apps if a.get("status") == "applied")
             dup_count = sum(1 for a in apps if a.get("status") == "already_applied")
 
-            col1, col2, col3, col4 = st.columns(4)
+            # Stats
+            col1, col2, col3, col4, col5 = st.columns(5)
             with col1:
-                st.markdown(
-                    f"""
-                    <div class="stat-card">
-                        <div class="stat-number" style="font-size:1rem;">{rid}</div>
-                        <div class="stat-label">Resume ID</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+                st.metric("Jobs Found", len(jobs))
             with col2:
-                st.markdown(
-                    f"""
-                    <div class="stat-card">
-                        <div class="stat-number">{len(jobs)}</div>
-                        <div class="stat-label">Jobs Found (Indian)</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+                st.metric("New Applications", applied_count)
             with col3:
-                st.markdown(
-                    f"""
-                    <div class="stat-card">
-                        <div class="stat-number">{applied_count}</div>
-                        <div class="stat-label">New Applications</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+                st.metric("Skipped (Duplicate)", dup_count)
             with col4:
-                st.markdown(
-                    f"""
-                    <div class="stat-card">
-                        <div class="stat-number">{dup_count}</div>
-                        <div class="stat-label">Skipped (Already Applied)</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+                avg_score = sum(j.get("match_score", 0) for j in jobs if j.get("match_score")) / max(len([j for j in jobs if j.get("match_score")]), 1)
+                st.metric("Avg Match Score", f"{avg_score:.0f}%")
+            with col5:
+                st.metric("Resume ID", rid[:8])
 
-            # Resume preview
-            with st.expander("📄 Resume Text Preview", expanded=False):
-                st.markdown(f'<div class="resume-preview">{resume_text}</div>', unsafe_allow_html=True)
+            st.markdown(f"**🔍 Query:** `{query}`")
 
-            # Search query
-            st.markdown(f"**🔍 Generated Search Query:** `{result.get('search_query', 'N/A')}`")
+            # Portal quick links
+            if query:
+                st.markdown("### 🔗 Quick Open Portals")
+                portal_links = build_portal_urls(query)
+                cols = st.columns(len(portal_links))
+                for i, portal in enumerate(portal_links):
+                    with cols[i]:
+                        st.markdown(
+                            f'<a href="{portal["url"]}" target="_blank" style="text-decoration:none;">'
+                            f'<div style="text-align:center; padding:0.5rem; background:#f8f9fa; border-radius:8px;">'
+                            f'<div style="font-size:1.5rem;">{portal.get("icon", "🔗")}</div>'
+                            f'<div style="font-size:0.75rem; font-weight:600;">{portal["source"].title()}</div>'
+                            f'</div></a>',
+                            unsafe_allow_html=True,
+                        )
 
             # Source breakdown
             source_counts = {}
@@ -308,99 +264,252 @@ if uploaded_file is not None:
                 src = j.get("source", "unknown")
                 source_counts[src] = source_counts.get(src, 0) + 1
             if source_counts:
-                parts = [f"**{src.capitalize()}**: {count}" for src, count in source_counts.items()]
-                st.markdown("**📊 Source Breakdown:** " + " | ".join(parts))
+                parts = [f"**{src.title()}**: {c}" for src, c in sorted(source_counts.items(), key=lambda x: -x[1])]
+                st.markdown("**📊 Sources:** " + " | ".join(parts))
 
-            # Jobs list
-            st.markdown("### 💼 Indian Jobs Found")
-            if not jobs:
-                st.info("No jobs found.")
-            else:
-                for job in jobs:
+            # Jobs with scores
+            st.markdown("### 💼 Jobs (Sorted by Match Score)")
+            scraped_jobs = [j for j in jobs if not j.get("is_portal_link")]
+            portal_jobs = [j for j in jobs if j.get("is_portal_link")]
+
+            if scraped_jobs:
+                for job in scraped_jobs:
+                    score = job.get("match_score", 0)
                     source = job.get("source", "unknown")
-                    src_badge = {
-                        "naukri": '<span class="source-badge source-naukri">Naukri</span>',
-                        "indeed": '<span class="source-badge source-indeed">Indeed</span>',
-                        "linkedin": '<span class="source-badge source-linkedin">LinkedIn</span>',
-                        "adzuna": '<span class="source-badge source-adzuna">Adzuna</span>',
-                    }.get(source, f'<span class="source-badge source-adzuna">{source}</span>')
+                    score_class = "score-high" if score >= 70 else ("score-mid" if score >= 40 else "score-low")
+                    src_tag = f'<span class="source-tag source-{source}">{source.title()}</span>'
+
+                    matched = job.get("matched_skills", [])
+                    missing = job.get("missing_skills", [])
+
+                    skills_html = ""
+                    if matched:
+                        skills_html += "✅ " + " ".join(f'<span class="skill-match">{s}</span>' for s in matched[:5])
+                    if missing:
+                        if skills_html:
+                            skills_html += " &nbsp;|&nbsp; "
+                        skills_html += "❌ " + " ".join(f'<span class="skill-missing">{s}</span>' for s in missing[:5])
 
                     salary = ""
                     if job.get("salary_min") and job.get("salary_max"):
-                        sal_min_lakh = job["salary_min"] / 100000
-                        sal_max_lakh = job["salary_max"] / 100000
-                        salary = f'<span class="salary-inr">₹{sal_min_lakh:.1f}L – ₹{sal_max_lakh:.1f}L</span>'
-                    elif job.get("salary_min"):
-                        salary = f'<span class="salary-inr">From ₹{job["salary_min"]/100000:.1f}L</span>'
-                    elif job.get("salary_max"):
-                        salary = f'<span class="salary-inr">Up to ₹{job["salary_max"]/100000:.1f}L</span>'
+                        salary = f'₹{job["salary_min"]/100000:.1f}L – ₹{job["salary_max"]/100000:.1f}L'
 
                     url = job.get("url", "")
-                    url_link = f'<a href="{url}" target="_blank">View Job →</a>' if url else ""
+                    url_link = f'<a href="{url}" target="_blank">🔗 Apply</a>' if url else ""
 
                     st.markdown(
                         f"""
                         <div class="job-card">
-                            <div style="display:flex; justify-content:space-between; align-items:center;">
-                                <div>
-                                    <div class="job-title">{job.get("title", "Unknown")}</div>
-                                    <div class="job-company">{job.get("company", "Unknown")}</div>
-                                    <div class="job-meta">
-                                        📍 {job.get("location", "N/A")} &nbsp;|&nbsp; {salary}
+                            <div style="display:flex; justify-content:space-between; align-items:start;">
+                                <div style="flex:1;">
+                                    <strong>{job.get("title", "Unknown")}</strong>
+                                    <span class="score-badge {score_class}">{score}%</span>
+                                    {src_tag}
+                                    <div style="font-size:0.85rem; color:#0d6efd;">{job.get("company", "")}</div>
+                                    <div style="font-size:0.8rem; color:#6c757d;">
+                                        📍 {job.get("location", "India")}
+                                        {' | ' + salary if salary else ''}
                                     </div>
+                                    <div style="font-size:0.8rem; margin-top:0.3rem;">{skills_html}</div>
                                 </div>
-                                <div style="text-align:right;">
-                                    {src_badge}
-                                    <div style="margin-top:0.3rem; font-size:0.85rem;">{url_link}</div>
-                                </div>
+                                <div style="text-align:right; font-size:0.85rem;">{url_link}</div>
                             </div>
                         </div>
                         """,
                         unsafe_allow_html=True,
                     )
+            else:
+                st.info("No scraped jobs found. Portal links below will open in your browser.")
+
+            # Portal links
+            if portal_jobs:
+                st.markdown("### 🔗 Portal Search Links")
+                cols = st.columns(len(portal_jobs))
+                for i, job in enumerate(portal_jobs):
+                    with cols[i]:
+                        st.markdown(
+                            f'<a href="{job["url"]}" target="_blank">'
+                            f'<div style="text-align:center; padding:0.5rem; background:#f0f2f6; border-radius:8px;">'
+                            f'{job.get("icon", "🔗")} <strong>{job["source"].title()}</strong>'
+                            f'</div></a>',
+                            unsafe_allow_html=True,
+                        )
 
             # Applications
             st.markdown("### ✅ Application Results")
-            if not apps:
-                st.info("No applications submitted.")
-            else:
+            if apps:
                 for app in apps:
                     status = app.get("status", "?")
-                    badge_class = "applied" if status == "applied" else "already_applied"
-                    badge_label = "✅ Applied" if status == "applied" else "⏭️ Already Applied"
+                    badge = "✅ Applied" if status == "applied" else "⏭️ Skipped"
+                    score = app.get("match_score")
+                    score_str = f" | Match: {score}%" if score else ""
                     st.markdown(
                         f"""
-                        <div class="job-card">
-                            <div style="display:flex; justify-content:space-between; align-items:center;">
-                                <div>
-                                    <span class="app-badge {badge_class}">{badge_label}</span>
-                                    <strong>{app.get("job_title", "Unknown")}</strong>
-                                    &nbsp;at&nbsp; <span class="job-company">{app.get("company", "Unknown")}</span>
-                                </div>
-                                <div class="job-meta" style="font-size:0.8rem;">
-                                    {app.get("detail", "")}
-                                </div>
-                            </div>
+                        <div class="job-card" style="padding:0.6rem 1rem;">
+                            <span style="font-weight:500;">{badge}</span>
+                            <strong>{app.get("job_title", "?")}</strong> @ {app.get("company", "?")}
+                            <span style="font-size:0.8rem; color:#6c757d;">{score_str}</span>
                         </div>
                         """,
                         unsafe_allow_html=True,
                     )
 
             # Raw JSON
-            with st.expander("📦 Raw JSON Output", expanded=False):
+            with st.expander("📦 Raw Output"):
                 st.json(result)
 
+
+# ===========================================================================
+# PAGE: DASHBOARD
+# ===========================================================================
+elif page == "📊 Dashboard":
+    st.markdown("## 📊 Analytics Dashboard")
+    data = get_analytics_data()
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Total Applications", data["total_applied"])
+    with col2:
+        st.metric("Resumes Used", data["total_resumes"])
+    with col3:
+        st.metric("Unique Jobs", data["unique_jobs"])
+    with col4:
+        st.metric("Avg/Day", f"{sum(data['daily_counts'].values())/max(len(data['daily_counts']),1):.1f}")
+
+    col_a, col_b = st.columns(2)
+
+    with col_a:
+        st.subheader("Applications by Source")
+        if data["source_counts"]:
+            df = pd.DataFrame(
+                list(data["source_counts"].items()),
+                columns=["Source", "Count"],
+            )
+            fig = px.pie(df, values="Count", names="Source", hole=0.4)
+            fig.update_layout(height=300, margin=dict(l=10, r=10, t=10, b=10))
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No data yet")
+
+    with col_b:
+        st.subheader("Applications Over Time")
+        if data["daily_counts"]:
+            df = pd.DataFrame(
+                list(data["daily_counts"].items()),
+                columns=["Date", "Count"],
+            )
+            fig = px.line(df, x="Date", y="Count", markers=True)
+            fig.update_layout(height=300, margin=dict(l=10, r=10, t=10, b=10))
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No data yet")
+
+    st.subheader("Top Companies")
+    if data["top_companies"]:
+        df = pd.DataFrame(
+            list(data["top_companies"].items()),
+            columns=["Company", "Applications"],
+        )
+        fig = px.bar(df, x="Applications", y="Company", orientation="h")
+        fig.update_layout(height=400, margin=dict(l=10, r=10, t=10, b=10))
+        st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("👆 Click the button above to start the pipeline.")
+        st.info("No data yet")
 
-else:
-    st.info("📄 Upload a PDF resume to get started.")
 
-# ---------------------------------------------------------------------------
-# Footer
-# ---------------------------------------------------------------------------
-st.markdown("---")
-st.caption(
-    "JobHunter AI v2.0.0 — Indian job search • Naukri / Indeed / LinkedIn sources • "
-    "Duplicate-safe application tracking • Powered by LangGraph & Streamlit"
-)
+# ===========================================================================
+# PAGE: RESUMES
+# ===========================================================================
+elif page == "📝 Resumes":
+    st.markdown("## 📝 Saved Resumes")
+
+    saved = list_resumes()
+    if saved:
+        for res in saved:
+            col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
+            with col1:
+                st.markdown(
+                    f'<div class="resume-card">'
+                    f'<strong>{res["name"]}</strong><br>'
+                    f'<span style="font-size:0.8rem; color:#6c757d;">'
+                    f'ID: {res["id"][:8]} | Applied: {res.get("applied_count", 0)} jobs | '
+                    f'Created: {res.get("created_at", "")[:10]}'
+                    f'</span></div>',
+                    unsafe_allow_html=True,
+                )
+            with col2:
+                if st.button("📄 View", key=f"view_{res['id']}"):
+                    st.info(f"Preview: {res.get('text', 'N/A')[:300]}...")
+            with col3:
+                if st.button("🚀 Run", key=f"run_{res['id']}"):
+                    st.session_state["run_resume_path"] = res["file_path"]
+                    st.rerun()
+            with col4:
+                if st.button("🗑️", key=f"del_{res['id']}"):
+                    delete_resume(res["id"])
+                    st.rerun()
+    else:
+        st.info("No saved resumes. Upload one in the Job Search tab.")
+
+    # Auto-run if triggered
+    if "run_resume_path" in st.session_state and st.session_state["run_resume_path"]:
+        fp = st.session_state["run_resume_path"]
+        st.session_state["run_resume_path"] = None
+        result = run_job_hunter(fp)
+        st.json(result)
+
+
+# ===========================================================================
+# PAGE: SETTINGS
+# ===========================================================================
+elif page == "⚙️ Settings":
+    st.markdown("## ⚙️ Settings")
+
+    with st.expander("📧 Email Notifications", expanded=True):
+        st.markdown("""
+        Add these to your `.env` file to receive email alerts after each pipeline run:
+        ```
+        SMTP_HOST=smtp.gmail.com
+        SMTP_PORT=587
+        SMTP_USER=your@gmail.com
+        SMTP_PASS=your-app-password
+        NOTIFICATION_EMAIL=your@email.com
+        ```
+        """)
+        st.info("ℹ️ For Gmail, use an App Password (not your regular password)")
+
+    with st.expander("🔑 API Keys (Optional)"):
+        st.markdown("""
+        Add these to `.env` for additional job sources:
+        ```
+        JOOBLE_API_KEY=your-key       # 100 req/day free - https://jooble.org/api/about
+        JSEARCH_API_KEY=your-key      # 50/month free - RapidAPI
+        ADZUNA_APP_ID=your-id         # 10 req/day free
+        ADZUNA_API_KEY=your-key
+        ```
+        """)
+
+    with st.expander("📤 Export All Data"):
+        csv_data = export_history_csv()
+        st.download_button(
+            "📥 Download Complete History CSV",
+            data=csv_data,
+            file_name="jobhunter_complete_history.csv",
+            mime="text/csv",
+        )
+
+        st.markdown("### Debug Info")
+        histories = list_all_histories()
+        st.json({
+            "total_histories": len(histories),
+            "total_applied": sum(len(h.get("applied_job_ids", [])) for h in histories),
+            "resumes_dir": str(Path("resumes").absolute()),
+            "history_dir": str(Path("history").absolute()),
+        })
+
+    # Footer
+    st.markdown("---")
+    st.caption(
+        "JobHunter AI v3.0.0 • Indian job search • AI matching • "
+        "Playwright scraping • Dashboard analytics • Open source"
+    )
