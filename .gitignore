@@ -8,6 +8,7 @@ __pycache__/
 .eggs/
 dist/
 build/
+venv/
 
 # Uploads (created at runtime)
 uploads/
@@ -20,14 +21,5 @@ uploads/
 .DS_Store
 Thumbs.db
 
-# Test outputs
-.pytest_cache/
-htmlcov/
-.coverage
-
 # Application history (runtime data)
 history/
-
-# Virtual environment
-venv/
-
