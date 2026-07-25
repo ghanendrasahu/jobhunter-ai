@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, START, END
 
-from utils import extract_text_from_pdf, search_adzuna_jobs, apply_to_job
+from utils import extract_text_from_pdf, search_all_jobs, apply_to_job
 
 load_dotenv()
 
@@ -51,12 +51,17 @@ def extract_resume(state: JobHunterState) -> JobHunterState:
 
 
 def generate_query(state: JobHunterState) -> JobHunterState:
-    """Use the LLM to produce a concise job search query from the resume."""
+    """Use the LLM to produce a concise job search query from the resume.
+
+    Falls back to keyword extraction if the LLM call fails (e.g. quota exceeded).
+    """
     if state.get("error"):
         return state
     resume = state.get("resume_text", "")
     if not resume:
         return {**state, "error": "resume_text missing – cannot generate query"}
+
+    # Try LLM first
     try:
         prompt = (
             "Based on the following resume, suggest a single job search query "
@@ -65,11 +70,46 @@ def generate_query(state: JobHunterState) -> JobHunterState:
         )
         response = _llm.invoke(prompt)
         query = response.content.strip("\n ")
-        logger.info("LLM generated query: %s", query)
-        return {**state, "search_query": query, "error": ""}
+        if query:
+            logger.info("LLM generated query: %s", query)
+            return {**state, "search_query": query, "error": ""}
     except Exception as exc:
-        logger.exception("LLM query generation failed")
-        return {**state, "error": f"Failed to generate query: {exc}"}
+        logger.warning("LLM query generation failed (%s); falling back to keyword extraction", exc)
+
+    # Fallback: extract keywords directly from resume text
+    logger.info("Falling back to keyword extraction from resume")
+    lines = resume.splitlines()
+    # Take the first non-empty line as a title hint
+    title_hint = ""
+    for line in lines:
+        stripped = line.strip()
+        if len(stripped) > 5:
+            title_hint = stripped
+            break
+
+    # Collect important-sounding words (capitalised phrases, tech keywords)
+    import re
+    words = re.findall(r"[A-Z][a-z]+(?:\s[A-Z][a-z]+)*", resume)
+    # Count frequency
+    from collections import Counter
+    freq = Counter(words)
+    # Filter out common words and short fragments
+    common = {"Resume", "Summary", "Experience", "Education", "Skills", "Projects",
+              "Certifications", "Languages", "Interests", "Contact", "Phone", "Email",
+              "LinkedIn", "GitHub", "Portfolio", "References", "Available", "Upon", "Request"}
+    keywords = [w for w in freq if w not in common and len(w) > 2]
+    # Pick top 5 by frequency
+    top_keywords = [w for w, _ in freq.most_common(15) if w not in common and len(w) > 2][:5]
+
+    if top_keywords:
+        query = " ".join(top_keywords)
+    elif title_hint:
+        query = title_hint
+    else:
+        query = "Software Engineer"  # ultimate fallback
+
+    logger.info("Fallback extracted query: %s", query)
+    return {**state, "search_query": query, "error": ""}
 
 
 def find_jobs(state: JobHunterState) -> JobHunterState:
@@ -80,7 +120,7 @@ def find_jobs(state: JobHunterState) -> JobHunterState:
     if not query:
         return {**state, "error": "search_query missing – cannot search jobs"}
     try:
-        jobs = search_adzuna_jobs(query)
+        jobs = search_all_jobs(query)
         logger.info("Found %d jobs for query: %s", len(jobs), query)
         return {**state, "jobs": jobs, "error": ""}
     except Exception as exc:

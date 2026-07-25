@@ -24,3 +24,12 @@ Thumbs.db
 .pytest_cache/
 htmlcov/
 .coverage
+
+# Application history (runtime data)
+history/
+
+# Virtual environment
+venv/
+
+# Generated sample file
+sample_resume.pdf
