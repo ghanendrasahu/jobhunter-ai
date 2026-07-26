@@ -23,6 +23,12 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+if not os.path.exists(".env"):
+    logger.info(
+        "No .env file found. Running with default/empty config. "
+        "Copy .env.example to .env and fill in your API keys for full functionality."
+    )
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------

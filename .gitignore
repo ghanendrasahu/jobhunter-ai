@@ -10,9 +10,6 @@ dist/
 build/
 venv/
 
-# Uploads (created at runtime)
-uploads/
-
 # IDE
 .vscode/
 .idea/
@@ -21,5 +18,7 @@ uploads/
 .DS_Store
 Thumbs.db
 
-# Application history (runtime data)
+# Runtime data
 history/
+resumes/
+uploads/

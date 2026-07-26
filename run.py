@@ -1,4 +1,4 @@
-"""CLI entry point that prompts the user for a PDF resume path and runs the pipeline."""
+"""CLI entry point — pass a PDF path or run interactively."""
 
 import json
 import sys
@@ -7,26 +7,38 @@ from pathlib import Path
 from agent import run_job_hunter
 
 
+def resolve_pdf(raw: str) -> Path:
+    p = Path(raw)
+    if not p.exists():
+        print(f"  ✗ File not found: {raw}")
+        sys.exit(1)
+    if p.suffix.lower() != ".pdf":
+        print(f"  ✗ Not a PDF file: {raw}")
+        sys.exit(1)
+    return p
+
+
 def main() -> None:
-    """Ask the user for a PDF path, validate it, and run the job-hunter pipeline."""
     print("=" * 60)
     print("  JobHunter AI — Resume Processing Pipeline")
     print("=" * 60)
 
-    while True:
-        raw = input("\nEnter the path to your PDF resume (or 'q' to quit): ").strip()
-        if raw.lower() in ("q", "quit", "exit"):
-            print("Goodbye.")
-            sys.exit(0)
-
-        pdf_path = Path(raw)
-        if not pdf_path.exists():
-            print(f"  ✗ File not found: {raw}")
-            continue
-        if pdf_path.suffix.lower() != ".pdf":
-            print(f"  ✗ Not a PDF file: {raw}")
-            continue
-        break
+    if len(sys.argv) > 1:
+        pdf_path = resolve_pdf(sys.argv[1])
+    else:
+        while True:
+            raw = input("\nEnter the path to your PDF resume (or 'q' to quit): ").strip()
+            if raw.lower() in ("q", "quit", "exit"):
+                print("Goodbye.")
+                sys.exit(0)
+            pdf_path = Path(raw)
+            if not pdf_path.exists():
+                print(f"  ✗ File not found: {raw}")
+                continue
+            if pdf_path.suffix.lower() != ".pdf":
+                print(f"  ✗ Not a PDF file: {raw}")
+                continue
+            break
 
     print(f"\n  ✓ Processing: {pdf_path.name}")
     print("  Running pipeline (extract → query → search → apply)...\n")

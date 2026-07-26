@@ -1,0 +1,14 @@
+version: "3.9"
+
+services:
+  jobhunter:
+    build: .
+    container_name: jobhunter-ai
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    volumes:
+      - ./history:/app/history
+      - ./resumes:/app/resumes
+    restart: unless-stopped
