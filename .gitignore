@@ -9,9 +9,15 @@ __pycache__/
 dist/
 build/
 venv/
+.venv/
+.pytest_cache/
+.coverage
+htmlcov/
 
-# Uploads (created at runtime)
+# Runtime data
 uploads/
+history/
+resumes/
 
 # IDE
 .vscode/
@@ -20,6 +26,3 @@ uploads/
 # OS
 .DS_Store
 Thumbs.db
-
-# Application history (runtime data)
-history/

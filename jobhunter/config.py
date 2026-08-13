@@ -1,0 +1,62 @@
+"""Application configuration loaded from environment variables and a `.env` file."""
+
+from __future__ import annotations
+
+from functools import lru_cache
+from pathlib import Path
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+class Settings(BaseSettings):
+    """Typed, environment-driven application settings.
+
+    Every field maps to an UPPER_CASE environment variable (e.g. `OPENAI_API_KEY`).
+    Values are also read from ``.env`` next to the project root.
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=PROJECT_ROOT / ".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    # LLM
+    openai_api_key: str = ""
+    openai_model: str = "gpt-4o-mini"
+
+    # Optional job APIs
+    adzuna_app_id: str = ""
+    adzuna_api_key: str = ""
+    jooble_api_key: str = ""
+    jsearch_api_key: str = ""
+
+    # SMTP email notifications (optional)
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_pass: str = ""
+    notification_email: str = ""
+
+    # Optional API auth (FastAPI)
+    jobhunter_api_key: str = ""
+    api_rate_limit: str = "20/minute"
+
+    # Runtime paths and limits
+    upload_dir: Path = PROJECT_ROOT / "uploads"
+    history_dir: Path = PROJECT_ROOT / "history"
+    resumes_dir: Path = PROJECT_ROOT / "resumes"
+    max_file_size_mb: int = 10
+
+    @property
+    def max_upload_bytes(self) -> int:
+        """Maximum accepted PDF upload size in bytes."""
+        return self.max_file_size_mb * 1024 * 1024
+
+
+@lru_cache
+def get_settings() -> Settings:
+    """Return the process-wide settings singleton."""
+    return Settings()

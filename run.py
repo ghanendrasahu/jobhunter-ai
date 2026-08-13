@@ -1,14 +1,19 @@
-"""CLI entry point that prompts the user for a PDF resume path and runs the pipeline."""
+"""CLI entry point that prompts for a PDF resume path and runs the pipeline.
+
+Usage: ``python run.py``
+"""
+
+from __future__ import annotations
 
 import json
 import sys
 from pathlib import Path
 
-from agent import run_job_hunter
+from jobhunter.agent import run_job_hunter
 
 
-def main() -> None:
-    """Ask the user for a PDF path, validate it, and run the job-hunter pipeline."""
+def _prompt_for_pdf() -> str:
+    """Loop until the user provides an existing PDF path (or quits)."""
     print("=" * 60)
     print("  JobHunter AI — Resume Processing Pipeline")
     print("=" * 60)
@@ -26,13 +31,17 @@ def main() -> None:
         if pdf_path.suffix.lower() != ".pdf":
             print(f"  ✗ Not a PDF file: {raw}")
             continue
-        break
+        return str(pdf_path)
 
-    print(f"\n  ✓ Processing: {pdf_path.name}")
+
+def main() -> None:
+    pdf_path = _prompt_for_pdf()
+
+    print(f"\n  ✓ Processing: {Path(pdf_path).name}")
     print("  Running pipeline (extract → query → search → apply)...\n")
 
     try:
-        result = run_job_hunter(str(pdf_path))
+        result = run_job_hunter(pdf_path)
     except Exception as exc:
         print(f"\n  ✗ Pipeline failed: {exc}")
         sys.exit(1)

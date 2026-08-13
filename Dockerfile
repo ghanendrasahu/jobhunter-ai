@@ -2,7 +2,7 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies for Playwright
+# Install system dependencies required by Playwright/Chromium
 RUN apt-get update && apt-get install -y \
     wget gnupg libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
     libcups2 libdrm2 libdbus-1-3 libxkbcommon0 libxcomposite1 \
@@ -10,21 +10,22 @@ RUN apt-get update && apt-get install -y \
     libcairo2 libasound2 libatspi2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first for caching
+# Install Python dependencies first for better layer caching
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Playwright and Chromium
-RUN pip install playwright && python -m playwright install chromium
+# Install Playwright and its Chromium browser
+RUN pip install --no-cache-dir playwright \
+    && python -m playwright install chromium \
+    && python -m playwright install-deps chromium
 
-# Copy app code
+# Copy application code
 COPY . .
 
-# Create runtime directories
+# Runtime directories
 RUN mkdir -p history resumes uploads
 
-# Expose Streamlit port
 EXPOSE 8501
 
-# Run Streamlit
+# Streamlit UI (default)
 CMD ["streamlit", "run", "streamlit_app.py", "--server.port=8501", "--server.address=0.0.0.0"]
