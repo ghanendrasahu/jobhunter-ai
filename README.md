@@ -124,7 +124,7 @@ JobHunter AI/
 
 ### Prerequisites
 
-- Python 3.11+
+- Python 3.11 (only 3.11.x is supported)
 - (Optional) An [OpenAI API key](https://platform.openai.com/api-keys) for AI query generation
 - (Optional) Playwright browser: `python -m playwright install chromium`
 

@@ -38,7 +38,35 @@ def test_profile_extracts_education():
     assert profile["education"]
 
 
+def test_profile_extracts_title():
+    profile = profile_from_resume(RESUME)
+    assert profile["current_title"] == "Software Engineer"
+
+
+def test_profile_extracts_ctc_and_notice_period():
+    resume = (
+        "Riya Patel\nBengaluru\n\n"
+        "Data Analyst with 3 years of experience.\n"
+        "Current CTC: 8 LPA | Expected CTC: 12 LPA\n"
+        "Notice Period: 30 days\n"
+        "LinkedIn: linkedin.com/in/riya-patel\n"
+    )
+    profile = profile_from_resume(resume)
+    assert profile["current_ctc"] == "8 LPA"
+    assert profile["expected_ctc"] == "12 LPA"
+    assert profile["notice_period"] == "30 days"
+    assert profile["linkedin"] == "https://linkedin.com/in/riya-patel"
+
+
+def test_profile_builds_cover_letter():
+    profile = profile_from_resume(RESUME)
+    assert profile["cover_letter"]
+    assert "Software Engineer" in profile["cover_letter"]
+
+
 def test_profile_empty_input_is_safe():
     profile = profile_from_resume("")
     assert profile["email"] == ""
     assert profile["skills"] == []
+    assert profile["current_title"] == ""
+    assert profile["cover_letter"] == ""

@@ -108,3 +108,28 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Return the process-wide settings singleton."""
     return Settings()
+
+
+def missing_api_keys() -> list[str]:
+    """Names of optional API keys that are not configured, in priority order."""
+    settings = get_settings()
+    checks: list[tuple[str, bool]] = [
+        ("OPENAI_API_KEY", bool(settings.openai_api_key)),
+        ("GROQ_API_KEY", bool(settings.groq_api_key)),
+        ("JSEARCH_API_KEY", bool(settings.jsearch_api_key)),
+        ("ADZUNA_APP_ID", bool(settings.adzuna_app_id and settings.adzuna_api_key)),
+        ("JOOBLE_API_KEY", bool(settings.jooble_api_key)),
+    ]
+    return [name for name, present in checks if not present]
+
+
+def warn_missing_keys(prefix: str = "JobHunter") -> None:
+    """Log a single, clear warning when required API keys are absent."""
+    missing = missing_api_keys()
+    if not missing:
+        return
+    logger.warning(
+        "%s: no key configured for %s. AI query generation and some job "
+        "sources are disabled; only keyword matching and scraping will run.",
+        prefix, ", ".join(missing),
+    )

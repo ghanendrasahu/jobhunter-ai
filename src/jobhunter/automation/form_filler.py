@@ -111,80 +111,112 @@ def _value_for(field: str, profile: dict) -> str | None:
         return profile.get("education") or ""
     if field == "current_title":
         return profile.get("current_title") or ""
+    if field == "linkedin":
+        return profile.get("linkedin") or ""
+    if field == "notice_period":
+        return profile.get("notice_period") or ""
+    if field == "current_ctc":
+        return profile.get("current_ctc") or ""
+    if field == "expected_ctc":
+        return profile.get("expected_ctc") or ""
+    if field == "cover_letter":
+        return profile.get("cover_letter") or ""
     return None
 
 
 def fill_form(page: Page, profile: dict, resume_pdf: str | None = None) -> dict:
-    """Auto-fill an application form from the profile. Returns fill statistics."""
+    """Auto-fill an application form from the profile. Returns fill statistics.
+
+    Traverses the main document and any iframes (many ATS forms render inside
+    frames), filling each visible, classified field it can map to the profile.
+    """
     stats = {"filled": 0, "skipped": 0, "unknown": 0, "file_uploaded": False}
 
-    controls = page.query_selector_all("input, textarea, select")
-    for handle in controls:
+    seen_handles: set[int] = set()
+    for frame in page.frames:
         try:
-            tag = handle.evaluate("el => el.tagName")
-            visible = handle.is_visible()
+            controls = frame.query_selector_all("input, textarea, select")
         except Exception:
             continue
-        if not visible:
-            continue
-
-        text = _field_text(page, handle)
-        field = classify_field(
-            handle.get_attribute("id") or "",
-            handle.get_attribute("name") or "",
-            handle.get_attribute("placeholder") or "",
-            text,
-        )
-
-        if field == "unknown":
-            stats["unknown"] += 1
-            continue
-        if is_skippable(handle.get_attribute("id") or "", handle.get_attribute("name") or "",
-                        handle.get_attribute("placeholder") or "", text):
-            stats["skipped"] += 1
-            continue
-
-        if tag == "SELECT":
-            if _fill_select(handle, profile, field):
-                stats["filled"] += 1
-            continue
-
-        el_type = ""
-        try:
-            el_type = (handle.get_attribute("type") or "").lower()
-        except Exception:
-            pass
-
-        if el_type == "file":
-            if resume_pdf:
-                try:
-                    handle.set_input_files(resume_pdf, timeout=5000)
-                    stats["filled"] += 1
-                    stats["file_uploaded"] = True
-                except Exception as exc:
-                    logger.debug("File upload failed: %s", exc)
-            continue
-        if el_type in ("checkbox", "radio"):
-            if field == "accept_terms":
-                try:
-                    if not handle.is_checked():
-                        handle.check(timeout=2000)
-                        stats["filled"] += 1
-                except Exception as exc:
-                    logger.debug("Checkbox fill failed: %s", exc)
-            continue
-        if el_type in ("hidden", "submit", "button", "password"):
-            continue
-
-        value = _value_for(field, profile)
-        if value:
+        for handle in controls:
             try:
-                handle.fill(value, timeout=2000)
+                key = handle.evaluate("el => { const n = el.name || ''; const i = el.id || ''; return n + '|' + i; }")
+            except Exception:
+                continue
+            if key in seen_handles:
+                continue
+            seen_handles.add(key)
+            if _fill_control(handle, profile, resume_pdf, stats):
                 stats["filled"] += 1
-            except Exception as exc:
-                logger.debug("Fill failed for %r: %s", field, exc)
-
     return stats
+
+
+def _fill_control(handle, profile: dict, resume_pdf: str | None, stats: dict) -> bool:
+    """Fill a single control. Returns True when a value was written."""
+    try:
+        tag = handle.evaluate("el => el.tagName")
+        visible = handle.is_visible()
+    except Exception:
+        return False
+    if not visible:
+        return False
+
+    text = _field_text(handle.page, handle)
+    field = classify_field(
+        handle.get_attribute("id") or "",
+        handle.get_attribute("name") or "",
+        handle.get_attribute("placeholder") or "",
+        text,
+    )
+
+    if field == "unknown":
+        stats["unknown"] += 1
+        return False
+    if is_skippable(handle.get_attribute("id") or "", handle.get_attribute("name") or "",
+                    handle.get_attribute("placeholder") or "", text):
+        stats["skipped"] += 1
+        return False
+
+    if tag == "SELECT":
+        if _fill_select(handle, profile, field):
+            return True
+        return False
+
+    el_type = ""
+    try:
+        el_type = (handle.get_attribute("type") or "").lower()
+    except Exception:
+        pass
+
+    if el_type == "file":
+        if resume_pdf:
+            try:
+                handle.set_input_files(resume_pdf, timeout=5000)
+                stats["file_uploaded"] = True
+                return True
+            except Exception as exc:
+                logger.debug("File upload failed: %s", exc)
+        return False
+    if el_type in ("checkbox", "radio"):
+        if field == "accept_terms":
+            try:
+                if not handle.is_checked():
+                    handle.check(timeout=2000)
+                    return True
+            except Exception as exc:
+                logger.debug("Checkbox fill failed: %s", exc)
+        return False
+    if el_type in ("hidden", "submit", "button", "password"):
+        return False
+
+    value = _value_for(field, profile)
+    if value:
+        try:
+            handle.fill(value, timeout=2000)
+            return True
+        except Exception as exc:
+            logger.debug("Fill failed for %r: %s", field, exc)
+    return False
 
 
 def _fill_select(handle, profile: dict, field: str) -> bool:

@@ -196,7 +196,13 @@ def _copy_minimal_profile(source: Path, dst: Path) -> None:
     The swap is crash-safe: the new copy lands in a temp dir and is renamed into
     place (old copy moved to a backup first), so a partial copy never corrupts
     the working profile.
+
+    Files Chrome currently has open (notably ``Network``/cookies) are skipped
+    individually rather than aborting the whole copy, so the existing profile
+    is always preferred over silently dropping to a fresh, logged-out profile.
     """
+    import time
+
     src_default = source / "Default"
     temp = dst.with_name(dst.name + ".tmp")
     backup = dst.with_name(dst.name + ".bak")
@@ -206,19 +212,55 @@ def _copy_minimal_profile(source: Path, dst: Path) -> None:
     temp.mkdir(parents=True, exist_ok=True)
     (temp / "Default").mkdir(parents=True, exist_ok=True)
 
+    skipped: list[str] = []
+
+    def _copy_one(src_path: Path, dst_path: Path) -> None:
+        for _ in range(3):
+            try:
+                shutil.copy2(src_path, dst_path)
+                return
+            except PermissionError:
+                time.sleep(0.2)
+        skipped.append(src_path.name)
+
     for name in _PROFILE_TOP_FILES:
         if (source / name).exists():
-            shutil.copy2(source / name, temp / name)
+            _copy_one(source / name, temp / name)
+
+    def _copy_tree(src_dir: Path, dst_dir: Path) -> None:
+        skipped_local: list[str] = []
+
+        def _copy_file(s: str, d: str) -> None:
+            try:
+                shutil.copy2(s, d)
+            except PermissionError:
+                skipped_local.append(Path(s).name)
+
+        try:
+            shutil.copytree(
+                src_dir, dst_dir, dirs_exist_ok=True,
+                copy_function=_copy_file, ignore_dangling_symlinks=True,
+            )
+        except shutil.Error:
+            skipped_local.append(src_dir.name)
+        skipped.extend(skipped_local)
 
     for name in _PROFILE_FILES:
         src = src_default / name
         if src.is_dir():
-            shutil.copytree(src, temp / "Default" / name, dirs_exist_ok=True)
+            _copy_tree(src, temp / "Default" / name)
         elif src.exists():
-            shutil.copy2(src, temp / "Default" / name)
+            _copy_one(src, temp / "Default" / name)
 
     if not (temp / "Local State").exists():
         raise RuntimeError("Local State missing from profile copy")
+
+    if skipped:
+        logger.warning(
+            "Chrome is probably running: %d profile file(s) were locked and skipped (%s). "
+            "New logins in Chrome won't appear until you close Chrome and re-run.",
+            len(skipped), ", ".join(sorted(set(skipped))),
+        )
 
     if dst.exists():
         try:

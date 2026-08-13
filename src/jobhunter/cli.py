@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 from jobhunter.agent import run_job_hunter
+from jobhunter.config import warn_missing_keys
 
 
 def _resolve_pdf(raw: str) -> str:
@@ -106,6 +107,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--interval", type=int, default=360, help="Minutes between scheduled runs")
     parser.add_argument("--max-runs", type=int, default=None, help="Stop after N scheduled runs")
     args = parser.parse_args(argv)
+
+    warn_missing_keys("JobHunter CLI")
 
     if args.schedule:
         _schedule(args)

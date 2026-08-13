@@ -235,6 +235,16 @@ class ApplyAgent:
             return {**base, "status": "no_apply_button", "detail": "No apply button found (maybe already applied or external ATS)."}
 
         page.wait_for_timeout(3000)
+        page.wait_for_function(
+            """() => {
+                const inputs = document.querySelectorAll('input, textarea, select');
+                for (const el of inputs) {
+                    if (el.offsetParent !== null) return true;
+                }
+                return false;
+            }""",
+            timeout=15000,
+        )
         stats = fill_form(page, profile, resume_pdf)
 
         if mode == "human":

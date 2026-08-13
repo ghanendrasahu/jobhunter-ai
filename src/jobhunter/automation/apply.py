@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 from jobhunter.automation import run_application_pipeline
+from jobhunter.config import warn_missing_keys
 from jobhunter.domains.resume import extract_text_from_pdf
 
 
@@ -31,6 +32,8 @@ def main(argv=None) -> int:
     parser.add_argument("--portals", nargs="*", default=None, help="Portals to use (naukri, indeed)")
     parser.add_argument("--max", type=int, default=None, help="Max applications per portal")
     args = parser.parse_args(argv)
+
+    warn_missing_keys("JobHunter apply")
 
     if not args.resume.exists():
         print(f"Resume not found: {args.resume}", file=sys.stderr)
