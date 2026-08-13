@@ -1,7 +1,7 @@
-# Runtime + dev tooling pins. `pyproject.toml` is the source of truth for
-# metadata and installs; this file is kept for environments that want an
-# explicit flat install (Docker, CI). For the console scripts
-# (`jobhunter`, `jobhunter-web`), also run: pip install -e .
+# Runtime pins. `pyproject.toml` is the source of truth for metadata and
+# installs; this file is kept for environments that want an explicit flat
+# install (Docker, minimal setups). For the console scripts (`jobhunter`,
+# `jobhunter-web`), also run: pip install -e .
 #
 # Core — for CLI and pipeline
 pypdf==6.15.0
@@ -27,10 +27,3 @@ pandas==3.0.5
 fastapi==0.141.1
 uvicorn[standard]==0.52.2
 slowapi==0.1.10
-
-# Dev & Test tooling
-pytest==9.0.3
-pytest-asyncio==1.4.0
-pytest-cov==7.1.0
-ruff==0.15.15
-mypy==2.1.0

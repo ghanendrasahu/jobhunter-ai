@@ -8,5 +8,8 @@ htmlcov/
 history/
 resumes/
 uploads/
+data/
 test.txt
-*.md
+*.uv
+.venv/
+venv/

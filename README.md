@@ -86,7 +86,8 @@ JobHunter AI/
 │       │       ├── api_sources.py  # Adzuna, Jooble & JSearch APIs
 │       │       └── engine.py  # search orchestration + dedupe
 │       ├── storage/
-│       │   └── history.py     # resume storage + application history + CSV
+│       │   ├── history.py     # resume storage + application history + CSV
+│       │   └── settings.py    # SQLite-persisted UI settings
 │       ├── services/
 │       │   ├── analytics.py   # dashboard aggregation
 │       │   └── notifications.py  # SMTP email alerts
@@ -98,7 +99,7 @@ JobHunter AI/
 │       └── ui/
 │           ├── dashboard.py   # Streamlit app shell + sidebar
 │           ├── components.py  # shared rendering (CSS, job cards, results)
-│           └── views.py       # page views (search, auto-apply, analytics, …)
+│           └── views.py       # page views (search, auto-apply, settings, analytics, …)
 ├── tests/                     # pytest suite
 │   ├── conftest.py            # fixtures + minimal PDF generator
 │   ├── test_pdf.py
@@ -108,12 +109,21 @@ JobHunter AI/
 │   ├── test_agent.py
 │   ├── test_api.py
 │   ├── test_scheduler.py
-│   └── test_automation.py
+│   ├── test_automation.py
+│   ├── test_profile.py        # resume profile extraction
+│   ├── test_config.py         # settings + missing-key warnings
+│   ├── test_settings.py       # SQLite settings store
+│   ├── test_services.py       # analytics + email notifications
+│   ├── test_api_sources.py    # Adzuna / Jooble / JSearch
+│   ├── test_strategies.py     # portal strategies
+│   └── test_browser.py        # minimal profile copy
 ├── pyproject.toml             # deps, console scripts, pytest/ruff/mypy config
-├── requirements.txt           # flat dependency pins
+├── requirements.txt           # flat runtime pins
+├── requirements-dev.txt       # flat dev pins (tests, ruff, mypy)
+├── uv.lock                    # locked dependency resolution (uv)
 ├── docker-compose.yml         # Containerized Streamlit service
 ├── Dockerfile
-├── .github/workflows/ci.yml   # lint + type-check + tests
+├── .github/workflows/ci.yml   # lint + type-check + tests (coverage ≥ 40%)
 ├── .env.example
 └── .gitignore
 ```
@@ -131,12 +141,15 @@ JobHunter AI/
 ### Setup
 
 ```bash
-# Install runtime deps, then install the package (provides the console scripts)
-pip install -r requirements.txt
-pip install -e .
+# Option A — uv (fast, reproducible; locks via uv.lock)
+uv sync --locked                      # installs runtime + dev deps
+uv run playwright install chromium    # Optional: browser for scraping
 
-# Optional: Playwright browser for scraping
-python -m playwright install chromium
+# Option B — pip
+pip install -r requirements.txt       # runtime deps
+pip install -r requirements-dev.txt   # dev deps (tests, lint, mypy)
+pip install -e .                      # provides the console scripts
+python -m playwright install chromium # Optional: browser for scraping
 
 # Configure environment
 cp .env.example .env
@@ -176,6 +189,15 @@ docker run -p 8501:8501 jobhunter-ai
 # or use docker compose (mounts history/ and resumes/ as volumes)
 docker compose up --build
 ```
+
+> The container runs as a non-root user, exposes a `/` healthcheck on port 8501,
+> and mounts `./data` so your browser session survives restarts.
+
+### Settings persistence
+
+Dashboard settings (portal credentials, auto-apply mode, application cap, SMTP) saved on the
+**⚙️ Settings** page are stored in `history/settings.db` and override environment variables.
+Environment variables still win for anything not exposed in the UI.
 
 ### Run the Auto-Apply agent
 
@@ -262,15 +284,18 @@ Liveness probe — returns `{"status": "ok", "version": "3.0.0"}`.
 ## Running tests
 
 ```bash
-pip install -e ".[dev]"
-python -m pytest
-# with coverage:
-python -m pytest --cov=jobhunter --cov-report=term-missing
+uv sync --locked
+uv run pytest
+# with coverage (matches CI, which fails below 40%):
+uv run pytest --cov=jobhunter --cov-report=term-missing --cov-fail-under=40
 ```
 
-Test coverage includes PDF extraction, match scoring, history/resume management, search
-orchestration & deduplication, the full LangGraph pipeline, and the REST API (validation, auth,
-rate limiting).
+Or with pip: `pip install -r requirements-dev.txt && python -m pytest --cov=jobhunter --cov-report=term-missing`
+
+Test coverage includes PDF extraction, match scoring, history/resume management, the SQLite
+settings store, search orchestration & deduplication, the Adzuna/Jooble/JSearch API clients, the
+full LangGraph pipeline, portal strategies, the minimal Chrome profile copy, the REST API
+(validation, auth, rate limiting), analytics aggregation, and SMTP notifications.
 
 ---
 

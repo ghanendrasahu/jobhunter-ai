@@ -290,36 +290,114 @@ def resumes_page() -> None:
 
 
 def settings_page() -> None:
-    """Configuration reference and data export."""
+    """Edit portal credentials, preferences, and email config (persisted)."""
     st.markdown("## ⚙️ Settings")
+    st.caption("Saved settings are stored locally and layered over your `.env` file.")
 
-    with st.expander("📧 Email Notifications", expanded=True):
-        st.markdown(
-            """
-            Add these to your `.env` file to receive email alerts after each pipeline run:
-            ```
-            SMTP_HOST=smtp.gmail.com
-            SMTP_PORT=587
-            SMTP_USER=your@gmail.com
-            SMTP_PASS=your-app-password
-            NOTIFICATION_EMAIL=your@email.com
-            ```
-            """
-        )
-        st.info("ℹ️ For Gmail, use an App Password (not your regular password)")
+    settings = get_settings()
+    from jobhunter.storage.settings import load_settings, save_settings
 
-    with st.expander("🔑 API Keys (Optional)"):
-        st.markdown(
-            """
-            Add these to `.env` for additional job sources:
-            ```
-            JOOBLE_API_KEY=your-key       # 100 req/day free - https://jooble.org/api/about
-            JSEARCH_API_KEY=your-key      # 50/month free - RapidAPI
-            ADZUNA_APP_ID=your-id         # 10 req/day free
-            ADZUNA_API_KEY=your-key
-            ```
-            """
+    saved = load_settings()
+    changed: dict[str, str] = {}
+
+    with st.expander("🔑 Portal Credentials", expanded=True):
+        naukri_email = st.text_input(
+            "Naukri email",
+            value=saved.get("naukri_email", settings.naukri_email),
+            key="set_naukri_email",
         )
+        naukri_password = st.text_input(
+            "Naukri password",
+            value=saved.get("naukri_password", settings.naukri_password),
+            type="password",
+            key="set_naukri_password",
+        )
+        indeed_email = st.text_input(
+            "Indeed email",
+            value=saved.get("indeed_email", settings.indeed_email),
+            key="set_indeed_email",
+        )
+        indeed_password = st.text_input(
+            "Indeed password",
+            value=saved.get("indeed_password", settings.indeed_password),
+            type="password",
+            key="set_indeed_password",
+        )
+        st.caption(
+            "Tip: if you log in via Google, leave these blank — JobHunter reuses "
+            "your Chrome login instead."
+        )
+        changed.update({
+            "naukri_email": naukri_email,
+            "naukri_password": naukri_password,
+            "indeed_email": indeed_email,
+            "indeed_password": indeed_password,
+        })
+
+    with st.expander("⚡ Application Preferences"):
+        _modes = ["human", "auto", "off"]
+        _current_mode = saved.get("auto_apply_mode", settings.auto_apply_mode)
+        _mode_index = _modes.index(_current_mode) if _current_mode in _modes else 0
+        auto_apply_mode = st.selectbox(
+            "Auto-apply mode",
+            options=_modes,
+            index=_mode_index,
+            key="set_mode",
+        )
+        max_applications = st.slider(
+            "Max applications per run",
+            min_value=1,
+            max_value=20,
+            value=int(saved.get("max_applications_per_run", settings.max_applications_per_run)),
+            key="set_max_apps",
+        )
+        changed.update({
+            "auto_apply_mode": auto_apply_mode,
+            "max_applications_per_run": str(max_applications),
+        })
+
+    with st.expander("📧 Email Notifications"):
+        st.caption("For Gmail, use an App Password (not your regular password).")
+        smtp_host = st.text_input(
+            "SMTP host",
+            value=saved.get("smtp_host", settings.smtp_host),
+            key="set_smtp_host",
+        )
+        smtp_port = st.number_input(
+            "SMTP port",
+            min_value=1,
+            max_value=65535,
+            value=int(saved.get("smtp_port", settings.smtp_port)),
+            key="set_smtp_port",
+        )
+        smtp_user = st.text_input(
+            "SMTP user",
+            value=saved.get("smtp_user", settings.smtp_user),
+            key="set_smtp_user",
+        )
+        smtp_pass = st.text_input(
+            "SMTP password",
+            value=saved.get("smtp_pass", settings.smtp_pass),
+            type="password",
+            key="set_smtp_pass",
+        )
+        notification_email = st.text_input(
+            "Notification email",
+            value=saved.get("notification_email", settings.notification_email),
+            key="set_notif_email",
+        )
+        changed.update({
+            "smtp_host": smtp_host,
+            "smtp_port": str(int(smtp_port)),
+            "smtp_user": smtp_user,
+            "smtp_pass": smtp_pass,
+            "notification_email": notification_email,
+        })
+
+    if st.button("💾 Save Settings", type="primary"):
+        save_settings({k: v for k, v in changed.items() if v != saved.get(k, "")})
+        st.success("Settings saved. They apply on the next pipeline run.")
+        st.rerun()
 
     with st.expander("📤 Export All Data"):
         csv_data = export_history_csv()

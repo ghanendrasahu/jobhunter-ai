@@ -106,8 +106,53 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    """Return the process-wide settings singleton."""
-    return Settings()
+    """Return the process-wide settings singleton, with persisted overrides applied."""
+    settings = Settings()
+    overrides = _persisted_overrides()
+    if overrides:
+        settings = settings.model_copy(update=overrides)
+    return settings
+
+
+# Settings the user may persist from the dashboard (layered over .env).
+PERSISTED_SETTING_KEYS: tuple[str, ...] = (
+    "naukri_email",
+    "naukri_password",
+    "indeed_email",
+    "indeed_password",
+    "smtp_host",
+    "smtp_port",
+    "smtp_user",
+    "smtp_pass",
+    "notification_email",
+    "auto_apply_mode",
+    "max_applications_per_run",
+)
+
+
+def _persisted_overrides() -> dict[str, object]:
+    """Merge dashboard-saved settings over env, coercing to the field type."""
+    try:
+        from jobhunter.storage.settings import load_settings
+
+        raw = load_settings()
+    except Exception:
+        return {}
+    fields = Settings.model_fields
+    overrides: dict[str, object] = {}
+    for key in PERSISTED_SETTING_KEYS:
+        if key not in raw or key not in fields:
+            continue
+        value: object = raw[key]
+        field_info = fields[key]
+        annotation = field_info.annotation
+        if annotation in (int, bool, float):
+            try:
+                value = annotation(raw[key])
+            except (TypeError, ValueError):
+                continue
+        overrides[key] = value
+    return overrides
 
 
 def missing_api_keys() -> list[str]:
