@@ -1,6 +1,6 @@
 # Runtime + dev tooling pins. `pyproject.toml` is the source of truth for
 # metadata and installs; this file is kept for environments that want an
-# explicit flat install (Docker, setup.bat, CI). For the console scripts
+# explicit flat install (Docker, CI). For the console scripts
 # (`jobhunter`, `jobhunter-web`), also run: pip install -e .
 #
 # Core — for CLI and pipeline

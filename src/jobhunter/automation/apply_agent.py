@@ -133,7 +133,11 @@ class ApplyAgent:
             return outcomes
 
         self._report("info", portal, f"Searching '{query}'")
-        page.goto(strategies.build_search_url(portal, query), timeout=45000)
+        try:
+            self._goto(page, strategies.build_search_url(portal, query))
+        except Exception as exc:
+            self._report("error", portal, f"Could not open search page: {exc}")
+            return outcomes
         page.wait_for_load_state("domcontentloaded")
         page.wait_for_timeout(3500)
 
@@ -185,6 +189,26 @@ class ApplyAgent:
 
         return outcomes
 
+    @staticmethod
+    def _goto(page, url: str, timeout: int = 45000, retries: int = 3) -> None:
+        """Navigate with retries to survive navigation races (Naukri redirects/lightboxes)."""
+        last_error: Exception | None = None
+        for attempt in range(retries):
+            try:
+                page.goto(url, timeout=timeout, wait_until="domcontentloaded")
+                return
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "Navigation to %s failed on attempt %d/%d: %s",
+                    url, attempt + 1, retries, exc,
+                )
+                try:
+                    page.wait_for_timeout(2500)
+                except Exception:
+                    return
+        raise last_error  # type: ignore[misc]  # mypy can't prove non-None here
+
     def _apply_to_job(
         self,
         page,
@@ -197,7 +221,7 @@ class ApplyAgent:
         base = {"job_id": job["id"], "title": job["title"], "company": job["company"], "source": portal}
 
         try:
-            page.goto(job["url"], timeout=45000)
+            self._goto(page, job["url"])
         except Exception as exc:
             return {**base, "status": "failed", "detail": f"Could not open job page: {exc}"}
         page.wait_for_timeout(2500)

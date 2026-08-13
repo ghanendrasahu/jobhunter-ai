@@ -111,7 +111,6 @@ JobHunter AI/
 │   └── test_automation.py
 ├── pyproject.toml             # deps, console scripts, pytest/ruff/mypy config
 ├── requirements.txt           # flat dependency pins
-├── setup.bat                  # Windows one-click setup
 ├── docker-compose.yml         # Containerized Streamlit service
 ├── Dockerfile
 ├── .github/workflows/ci.yml   # lint + type-check + tests
@@ -130,10 +129,6 @@ JobHunter AI/
 - (Optional) Playwright browser: `python -m playwright install chromium`
 
 ### Setup
-
-**Windows:** double-click `setup.bat` (installs deps, Playwright, and creates `.env`).
-
-**Manual:**
 
 ```bash
 # Install runtime deps, then install the package (provides the console scripts)
