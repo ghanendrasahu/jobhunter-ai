@@ -16,26 +16,42 @@ logger = logging.getLogger(__name__)
 
 
 class BrowserSession:
-    """Thin wrapper around a Playwright persistent browser context."""
+    """Thin wrapper around a Playwright persistent browser context.
 
-    def __init__(self, state_dir: Path, headless: bool = False):
+    Uses the user's installed Chrome (``channel="chrome"``) when available so
+    logins already present in Chrome can be reused, and falls back to the
+    bundled chromium build otherwise.
+    """
+
+    def __init__(self, state_dir: Path, headless: bool = False, channel: str = "chrome"):
         self.state_dir = Path(state_dir)
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.headless = headless
+        self.channel = channel or "chrome"
         self._playwright = None
         self._context: Optional[BrowserContext] = None
 
     def start(self) -> BrowserContext:
         """Launch the persistent context (non-headless by default for human-in-the-loop)."""
         self._playwright = sync_playwright().start()
-        self._context = self._playwright.chromium.launch_persistent_context(
-            user_data_dir=str(self.state_dir / "profile"),
-            headless=self.headless,
-            args=["--start-maximized"],
-            no_viewport=True,
-        )
-        logger.info("Browser session started (headless=%s)", self.headless)
+        try:
+            self._context = self._launch()
+        except Exception as exc:
+            logger.warning("Could not launch channel %r (%s); falling back to bundled chromium", self.channel, exc)
+            self._context = self._launch(channel=None)
+        logger.info("Browser session started (channel=%s, headless=%s)", self.channel, self.headless)
         return self._context
+
+    def _launch(self, channel: Optional[str] = None) -> BrowserContext:
+        kwargs: dict = {
+            "user_data_dir": str(self.state_dir / "profile"),
+            "headless": self.headless,
+            "args": ["--start-maximized"],
+            "no_viewport": True,
+        }
+        if channel:
+            kwargs["channel"] = channel
+        return self._playwright.chromium.launch_persistent_context(**kwargs)
 
     def new_page(self) -> Page:
         if self._context is None:

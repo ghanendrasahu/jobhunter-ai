@@ -72,6 +72,12 @@ class Settings(BaseSettings):
     max_applications_per_run: int = 5
     headless_browser: bool = False
     browser_state_dir: Path = PROJECT_ROOT / "data" / "browser_state"
+    # Browser channel: "chrome" reuses your installed Chrome (best fingerprint,
+    # reuses your existing logged-in sessions when launched with your profile).
+    # Falls back to bundled chromium automatically if Chrome is unavailable.
+    browser_channel: str = "chrome"
+    # Seconds to wait for a manual login in the opened browser window.
+    manual_login_timeout: int = 180
     # Extra details injected into application forms (e.g. expected salary, notice period)
     application_notes: str = ""
 

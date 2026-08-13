@@ -406,19 +406,14 @@ def auto_apply_page() -> None:
                                 index=["human", "auto", "off"].index(settings.auto_apply_mode))
             portals = st.multiselect("Portals", ["naukri", "indeed"], default=["naukri", "indeed"])
             max_apps = st.slider("Max applications per run", 1, 10, settings.max_applications_per_run)
-            st.caption("Portals need credentials in `.env` (NAUKRI_EMAIL/NAUKRI_PASSWORD, INDEED_EMAIL/INDEED_PASSWORD).")
+            st.caption("No portal passwords needed: leave `.env` credentials empty and log in once in the opened browser window (session persists).")
 
     with col_right:
-        st.markdown("#### Portal credentials")
-        st.code(
-            "NAUKRI_EMAIL=you@email.com\nNAUKRI_PASSWORD=...\nINDEED_EMAIL=you@email.com\nINDEED_PASSWORD=..."
-        )
-        st.markdown("#### What happens")
-        st.markdown("1. Opens a persistent browser (logged-in session reused)")
-        st.markdown("2. Searches each portal for your query")
-        st.markdown("3. Groq scores every job → apply/skip decision")
-        st.markdown("4. Opens apply form & pre-fills from your resume")
-        st.markdown("5. Records applications to your history")
+        st.markdown("#### How login works")
+        st.markdown("No passwords stored in `.env` needed.")
+        st.markdown("1. The agent opens your installed Chrome")
+        st.markdown("2. If not logged in, the portal login page appears — log in once in that window")
+        st.markdown("3. Your session is saved and reused on every future run")
 
     if resume_text and st.button("🚀 Run Apply Agent", type="primary", use_container_width=True):
         with st.status("Running apply agent…", expanded=True) as status:

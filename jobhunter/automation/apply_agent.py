@@ -71,7 +71,7 @@ class ApplyAgent:
         self._report("info", "profile", f"Profile: {profile['email'] or 'no email'} | skills: {len(profile['skills'])}")
 
         results: List[Dict] = []
-        session = BrowserSession(self.settings.browser_state_dir, self.settings.headless_browser)
+        session = BrowserSession(self.settings.browser_state_dir, self.settings.headless_browser, self.settings.browser_channel)
         try:
             session.start()
             for portal in portals:
@@ -209,9 +209,18 @@ class ApplyAgent:
 
         email = getattr(self.settings, f"{portal}_email", "")
         password = getattr(self.settings, f"{portal}_password", "")
+
+        # No credentials configured -> let the user log in manually in the
+        # opened browser window (sessions persist between runs, so it's one-time).
         if not email or not password:
-            self._report("warning", portal, f"Missing {portal} credentials in .env")
-            return False
+            self._report("info", portal, f"No {portal} credentials in .env — logging in manually for you")
+            try:
+                page.goto(strategies.PORTALS[portal]["login_url"], timeout=45000)
+                page.wait_for_load_state("domcontentloaded")
+            except Exception as exc:
+                self._report("error", portal, f"Could not open login page: {exc}")
+                return False
+            return self._wait_manual_login(page, portal)
 
         self._report("info", portal, "Logging in…")
         try:
@@ -238,6 +247,22 @@ class ApplyAgent:
             return True  # user can finish; persist session for next run
 
         return True
+
+    def _wait_manual_login(self, page, portal: str) -> bool:
+        """Poll until the user completes login in the browser window."""
+        selectors = strategies.login_selector(portal)
+        deadline = time.time() + self.settings.manual_login_timeout
+        self._report(
+            "info", portal,
+            f"Log in now in the browser window (waiting up to {self.settings.manual_login_timeout}s)…",
+        )
+        while time.time() < deadline:
+            if is_logged_in(page, selectors["logged_in"]):
+                self._report("info", portal, "Login detected — continuing")
+                return True
+            page.wait_for_timeout(5000)
+        self._report("warning", portal, "Manual login not detected in time — skipping portal")
+        return False
 
     def _google_jobs_fallback(self, query: str, session: BrowserSession) -> None:
         try:

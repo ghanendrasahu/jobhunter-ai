@@ -185,6 +185,11 @@ Or use the **🤖 Auto Apply** page in the Streamlit dashboard. The agent:
 4. In **human** mode you finish + submit (needed for CAPTCHAs / multi-step ATS forms); in **auto** mode it submits for you.
 5. Records every application to your history (visible on the Dashboard).
 
+> **No portal passwords needed.** Leave `NAUKRI_EMAIL/NAUKRI_PASSWORD` (etc.) empty and the
+> agent opens the portal login page in your installed Chrome (`BROWSER_CHANNEL=chrome`),
+> waits for you to log in once, and reuses that session on every future run
+> (persisted under `data/browser_state/`).
+>
 > Install the browser engine once: `python -m playwright install chromium`
 > Portals block automation aggressively. Start in `human` mode and keep volume low to avoid account bans; a company confirmation email only arrives after a *real* submission.
 
@@ -208,11 +213,13 @@ Or use the **🤖 Auto Apply** page in the Streamlit dashboard. The agent:
 | `JOBHUNTER_API_KEY`      | No       | If set, REST clients must send `X-API-Key` header|
 | `API_RATE_LIMIT`         | No       | FastAPI rate limit (default `20/minute`)         |
 | `MAX_FILE_SIZE_MB`       | No       | Max PDF upload size (default `10`)               |
-| `NAUKRI_EMAIL` / `NAUKRI_PASSWORD` | No | Naukri login for the apply agent          |
-| `INDEED_EMAIL` / `INDEED_PASSWORD` | No | Indeed login for the apply agent          |
+| `NAUKRI_EMAIL` / `NAUKRI_PASSWORD` | No | Naukri login for the apply agent (optional — manual login in browser window) |
+| `INDEED_EMAIL` / `INDEED_PASSWORD` | No | Indeed login for the apply agent (optional — manual login in browser window) |
 | `AUTO_APPLY_MODE`        | No       | `human` (pre-fill, user submits), `auto`, `off` (default `human`) |
 | `MAX_APPLICATIONS_PER_RUN` | No     | Cap per run (default `5`)                        |
 | `HEADLESS_BROWSER`       | No       | Run the browser hidden (default `false`)         |
+| `BROWSER_CHANNEL`        | No       | `chrome` (installed Chrome, default) or `chromium` (bundled) |
+| `MANUAL_LOGIN_TIMEOUT`   | No       | Seconds to wait for manual login (default `180`) |
 
 \* *The pipeline works fully without an OpenAI key — query generation falls back to keyword extraction.*
 
