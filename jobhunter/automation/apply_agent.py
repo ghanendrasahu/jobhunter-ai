@@ -23,7 +23,7 @@ from jobhunter.automation.browser import BrowserSession, is_logged_in
 from jobhunter.automation.evaluator import evaluate_job
 from jobhunter.automation.form_filler import fill_form
 from jobhunter.automation.profile import profile_from_resume
-from jobhunter.automation.strategies import click_by_text, fill_input
+from jobhunter.automation.strategies import click_by_text, click_apply, fill_input
 from jobhunter.config import Settings, get_settings
 from jobhunter.core.history import save_applied_jobs
 
@@ -67,13 +67,31 @@ class ApplyAgent:
         self._on_status = on_status
         self._llm = _default_llm()
 
+        if self.settings.fresher_only and not any(
+            k in query.lower() for k in ("fresher", "entry level", "junior")
+        ):
+            query = f"{query} fresher"
+            self._report("info", "start", f"Fresher mode on — search query set to '{query}'")
+
         self._report("info", "start", f"Mode={mode} | Portals={portals} | Max apps={max_applications}")
         self._report("info", "profile", f"Profile: {profile['email'] or 'no email'} | skills: {len(profile['skills'])}")
 
         results: List[Dict] = []
-        session = BrowserSession(self.settings.browser_state_dir, self.settings.headless_browser, self.settings.browser_channel)
+        session = BrowserSession(
+            self.settings.browser_state_dir,
+            self.settings.headless_browser,
+            self.settings.browser_channel,
+            self.settings.browser_use_default_profile,
+            self.settings.browser_user_data_dir,
+        )
         try:
             session.start()
+            self._report(
+                "info", "browser",
+                "Using your default Chrome profile (existing logins reused). "
+                if session.using_default_profile
+                else "Using dedicated browser profile.",
+            )
             for portal in portals:
                 try:
                     outcomes = self._process_portal(
@@ -84,13 +102,13 @@ class ApplyAgent:
                 except Exception as exc:
                     logger.exception("Portal %s failed", portal)
                     self._report("error", portal, f"Failed: {exc}")
+
+            # Fallback: nothing applied anywhere -> surface Google Jobs search.
+            if not results:
+                self._google_jobs_fallback(query, session)
+                self._report("warning", "fallback", "No applications recorded; opened Google Jobs search for review.")
         finally:
             session.stop()
-
-        # Fallback: nothing applied anywhere -> surface Google Jobs search.
-        if not results:
-            self._google_jobs_fallback(query, session)
-            self._report("warning", "fallback", "No applications recorded; opened Google Jobs search for review.")
 
         return {"results": results, "log": self._log, "mode": mode}
 
@@ -121,16 +139,29 @@ class ApplyAgent:
 
         obstacle = strategies.detect_obstacle(page.url, page.inner_text("body")[:4000])
         if obstacle:
-            self._report("warning", portal, f"Search blocked: {obstacle}")
+            self._report(
+                "warning", portal,
+                f"Search blocked by a bot check ({obstacle}). You can complete it in "
+                f"the browser window (the agent will continue after a refresh), or skip this portal.",
+            )
             return outcomes
 
         jobs = strategies.collect_cards(page, portal, max_results=max(10, max_applications * 2))
         self._report("info", portal, f"{len(jobs)} jobs found")
 
-        applied = 0
+        attempts = 0
         for job in jobs:
-            if applied >= max_applications:
+            if attempts >= max_applications:
                 break
+
+            if self.settings.fresher_only:
+                required = strategies.job_experience_years(job)
+                if required is not None and required > self.settings.max_experience_years:
+                    self._report(
+                        "info", portal,
+                        f"Skipping {job['title']} @ {job['company']} — requires {required}+ yrs",
+                    )
+                    continue
 
             evaluation = evaluate_job(job, resume_text, self._llm)
             self._report(
@@ -140,12 +171,12 @@ class ApplyAgent:
             if evaluation["decision"] != "apply":
                 continue
 
+            attempts += 1  # counts every apply attempt, keeping the run bounded
             outcome = self._apply_to_job(page, portal, job, profile, mode, resume_pdf)
             outcome["evaluation"] = evaluation
             outcomes.append(outcome)
 
             if outcome.get("status") in ("submitted", "handed_off"):
-                applied += 1
                 self._record_application(resume_text, job, outcome)
                 if mode == "human" and outcome.get("status") == "handed_off":
                     # Human-in-the-loop: pause so the user can finish the form.
@@ -176,7 +207,7 @@ class ApplyAgent:
         if obstacle:
             return {**base, "status": "blocked", "detail": f"Obstacle: {obstacle}"}
 
-        clicked = strategies.click_by_text(page, "Apply") or _click_selector(page, config["apply_button"])
+        clicked = strategies.click_apply(page)
         if not clicked:
             return {**base, "status": "no_apply_button", "detail": "No apply button found (maybe already applied or external ATS)."}
 
@@ -203,7 +234,32 @@ class ApplyAgent:
     # ------------------------------------------------------------------ support
     def _ensure_login(self, page, portal: str) -> bool:
         selectors = strategies.login_selector(portal)
-        if is_logged_in(page, selectors["logged_in"]):
+        login_url = strategies.PORTALS[portal]["login_url"]
+        login_markers = ("login", "auth", "signin")
+
+        # Always open the portal login URL first: when already logged in it
+        # redirects straight to the homepage, which is the login check.
+        try:
+            page.goto(login_url, timeout=45000)
+            page.wait_for_load_state("domcontentloaded")
+        except Exception as exc:
+            self._report("error", portal, f"Could not open portal page: {exc}")
+            return False
+
+        redirected_away = not any(marker in (page.url or "").lower() for marker in login_markers)
+        already_logged_in = redirected_away or _safe_logged_in(page, selectors["logged_in"])
+        if not already_logged_in:
+            # Some portals (Naukri) show the login page even when logged in; the
+            # logged-in indicator only appears on the homepage.
+            home_url = strategies.PORTALS[portal].get("home_url", "")
+            if home_url:
+                try:
+                    page.goto(home_url, timeout=45000)
+                    page.wait_for_load_state("domcontentloaded")
+                    already_logged_in = _safe_logged_in(page, selectors["logged_in"])
+                except Exception as exc:
+                    logger.warning("Homepage login check failed for %s: %s", portal, exc)
+        if already_logged_in:
             self._report("info", portal, "Already logged in")
             return True
 
@@ -214,18 +270,10 @@ class ApplyAgent:
         # opened browser window (sessions persist between runs, so it's one-time).
         if not email or not password:
             self._report("info", portal, f"No {portal} credentials in .env — logging in manually for you")
-            try:
-                page.goto(strategies.PORTALS[portal]["login_url"], timeout=45000)
-                page.wait_for_load_state("domcontentloaded")
-            except Exception as exc:
-                self._report("error", portal, f"Could not open login page: {exc}")
-                return False
             return self._wait_manual_login(page, portal)
 
         self._report("info", portal, "Logging in…")
         try:
-            page.goto(strategies.PORTALS[portal]["login_url"], timeout=45000)
-            page.wait_for_load_state("domcontentloaded")
             if selectors["email"] and not fill_input(page, selectors["email"], email):
                 strategies.click_by_text(page, "Continue")
                 page.wait_for_timeout(2000)
@@ -251,16 +299,37 @@ class ApplyAgent:
     def _wait_manual_login(self, page, portal: str) -> bool:
         """Poll until the user completes login in the browser window."""
         selectors = strategies.login_selector(portal)
+        login_url = strategies.PORTALS[portal]["login_url"].lower()
         deadline = time.time() + self.settings.manual_login_timeout
         self._report(
             "info", portal,
             f"Log in now in the browser window (waiting up to {self.settings.manual_login_timeout}s)…",
         )
         while time.time() < deadline:
-            if is_logged_in(page, selectors["logged_in"]):
+            current_url = ""
+            try:
+                current_url = (page.url or "").lower()
+            except Exception:
+                pass
+            # Logged in when the indicator appears, or when the page has
+            # navigated away from the login/auth URL (Naukri/Indeed redirect
+            # to their homepages after a successful login).
+            redirected = bool(current_url) and not any(
+                marker in current_url for marker in ("login", "auth", "signin")
+            )
+            logged_in = False
+            try:
+                logged_in = is_logged_in(page, selectors["logged_in"])
+            except Exception:
+                pass
+            if logged_in or redirected:
                 self._report("info", portal, "Login detected — continuing")
                 return True
-            page.wait_for_timeout(5000)
+            try:
+                page.wait_for_timeout(5000)
+            except Exception:
+                self._report("warning", portal, "Browser window was closed during login wait — skipping portal")
+                return False
         self._report("warning", portal, "Manual login not detected in time — skipping portal")
         return False
 
@@ -303,6 +372,14 @@ def _click_selector(page, selector: str) -> bool:
     try:
         page.click(selector, timeout=5000)
         return True
+    except Exception:
+        return False
+
+
+def _safe_logged_in(page, logged_in_selector: str) -> bool:
+    """is_logged_in that never raises (browser may have closed)."""
+    try:
+        return is_logged_in(page, logged_in_selector)
     except Exception:
         return False
 

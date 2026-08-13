@@ -185,10 +185,13 @@ Or use the **🤖 Auto Apply** page in the Streamlit dashboard. The agent:
 4. In **human** mode you finish + submit (needed for CAPTCHAs / multi-step ATS forms); in **auto** mode it submits for you.
 5. Records every application to your history (visible on the Dashboard).
 
-> **No portal passwords needed.** Leave `NAUKRI_EMAIL/NAUKRI_PASSWORD` (etc.) empty and the
-> agent opens the portal login page in your installed Chrome (`BROWSER_CHANNEL=chrome`),
-> waits for you to log in once, and reuses that session on every future run
-> (persisted under `data/browser_state/`).
+> **No portal passwords or extra logins needed.** The agent copies a *minimal slice*
+> of your default Chrome profile (a few MB: `Local State`, `Preferences`, cookie
+> store) and launches Chrome against that copy, so **all your existing portal logins
+> are reused automatically** — Chrome itself decrypts its own cookies, bypassing
+> modern Chrome's App-Bound Encryption and its block on automating the real profile.
+> The copy refreshes automatically when your real Chrome profile changes.
+> Disable with `BROWSER_USE_DEFAULT_PROFILE=false` to use the dedicated profile instead.
 >
 > Install the browser engine once: `python -m playwright install chromium`
 > Portals block automation aggressively. Start in `human` mode and keep volume low to avoid account bans; a company confirmation email only arrives after a *real* submission.
@@ -219,7 +222,11 @@ Or use the **🤖 Auto Apply** page in the Streamlit dashboard. The agent:
 | `MAX_APPLICATIONS_PER_RUN` | No     | Cap per run (default `5`)                        |
 | `HEADLESS_BROWSER`       | No       | Run the browser hidden (default `false`)         |
 | `BROWSER_CHANNEL`        | No       | `chrome` (installed Chrome, default) or `chromium` (bundled) |
+| `BROWSER_USE_DEFAULT_PROFILE` | No | Reuse your default Chrome logins via an auto-refreshed minimal profile copy (default `true`) |
+| `BROWSER_USER_DATA_DIR`  | No       | Explicit Chrome 'User Data' dir (auto-detected when empty) |
 | `MANUAL_LOGIN_TIMEOUT`   | No       | Seconds to wait for manual login (default `180`) |
+| `FRESHER_ONLY`           | No       | Fresher-only mode: augments the query, skips senior roles (default `true`) |
+| `MAX_EXPERIENCE_YEARS`   | No       | Jobs requiring more years than this are skipped (default `2`) |
 
 \* *The pipeline works fully without an OpenAI key — query generation falls back to keyword extraction.*
 

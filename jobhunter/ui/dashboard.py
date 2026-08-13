@@ -410,10 +410,10 @@ def auto_apply_page() -> None:
 
     with col_right:
         st.markdown("#### How login works")
-        st.markdown("No passwords stored in `.env` needed.")
-        st.markdown("1. The agent opens your installed Chrome")
-        st.markdown("2. If not logged in, the portal login page appears — log in once in that window")
-        st.markdown("3. Your session is saved and reused on every future run")
+        st.markdown("No passwords or extra logins needed.")
+        st.markdown("1. The agent copies a few MB of your **default Chrome profile** (cookies + config)")
+        st.markdown("2. It launches Chrome against that copy — **all existing portal logins reused**")
+        st.markdown("3. The copy auto-refreshes when your Chrome profile changes")
 
     if resume_text and st.button("🚀 Run Apply Agent", type="primary", use_container_width=True):
         with st.status("Running apply agent…", expanded=True) as status:

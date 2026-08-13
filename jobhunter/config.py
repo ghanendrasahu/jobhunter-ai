@@ -72,12 +72,21 @@ class Settings(BaseSettings):
     max_applications_per_run: int = 5
     headless_browser: bool = False
     browser_state_dir: Path = PROJECT_ROOT / "data" / "browser_state"
-    # Browser channel: "chrome" reuses your installed Chrome (best fingerprint,
-    # reuses your existing logged-in sessions when launched with your profile).
-    # Falls back to bundled chromium automatically if Chrome is unavailable.
+    # Browser channel: "chrome" reuses your installed Chrome (best fingerprint).
     browser_channel: str = "chrome"
+    # Reuse your default Chrome account sessions: the agent copies a minimal
+    # slice of your real Chrome profile (only a few MB) and launches against the
+    # copy, so all existing portal logins work with zero extra login. The copy is
+    # refreshed automatically when your real profile changes.
+    browser_use_default_profile: bool = True
+    # Optional explicit Chrome "User Data" directory (auto-detected when empty).
+    browser_user_data_dir: str = ""
     # Seconds to wait for a manual login in the opened browser window.
     manual_login_timeout: int = 180
+    # Only consider fresher/entry-level roles (filters out senior listings).
+    fresher_only: bool = True
+    # Jobs requiring more than this many years of experience are skipped.
+    max_experience_years: int = 2
     # Extra details injected into application forms (e.g. expected salary, notice period)
     application_notes: str = ""
 

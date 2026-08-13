@@ -16,6 +16,7 @@ from playwright.sync_api import Page
 PORTALS: Dict[str, Dict] = {
     "naukri": {
         "name": "Naukri",
+        "home_url": "https://www.naukri.com",
         "search_url": "https://www.naukri.com/{query}-jobs-in-india",
         "login_url": "https://www.naukri.com/nlogin/login",
         # Selectors (best-effort)
@@ -33,6 +34,7 @@ PORTALS: Dict[str, Dict] = {
     },
     "indeed": {
         "name": "Indeed",
+        "home_url": "https://in.indeed.com",
         "search_url": "https://in.indeed.com/jobs?q={query}&l=India",
         "login_url": "https://secure.indeed.com/auth",
         "job_card": ".job_seen_beacon, [class*='job_seen_beacon'], .tapItem",
@@ -49,6 +51,7 @@ PORTALS: Dict[str, Dict] = {
     },
     "google_jobs": {
         "name": "Google Jobs",
+        "home_url": "https://www.google.com/search?q={query}+jobs+in+India&ibp=htl;jobs",
         "search_url": "https://www.google.com/search?q={query}+jobs+in+India&ibp=htl;jobs",
         # Google is an aggregator — no login, no apply. It redirects to source sites.
         "job_card": "[jscontroller*='JobCard'], .i8Z77e",
@@ -65,7 +68,7 @@ PORTALS: Dict[str, Dict] = {
     },
 }
 
-# Text patterns that indicate an obstacle (CAPTCHA / verification) on the page.
+# Text patterns that indicate an obstacle (CAPTCHA / bot-verification) on the page.
 OBSTACLE_PATTERNS = [
     r"captcha",
     r"verify you are human",
@@ -74,6 +77,18 @@ OBSTACLE_PATTERNS = [
     r"unusual traffic",
     r"too many requests",
     r"temporarily blocked",
+    r"additional verification required",
+    r"cloudflare",
+    r"checking your browser",
+    r"attention required",
+    r"enable javascript and cookies",
+]
+
+# Common Indian cities used to strip location tokens from URL slugs.
+INDIAN_CITIES = [
+    "bangalore", "bengaluru", "hyderabad", "mumbai", "pune", "chennai",
+    "delhi", "noida", "gurgaon", "gurugram", "kolkata", "ahmedabad",
+    "kochi", "jaipur", "indore", "chandigarh", "remote", "india",
 ]
 
 
@@ -84,9 +99,37 @@ def build_search_url(portal: str, query: str) -> str:
 
 
 def click_by_text(page: Page, text: str, timeout_ms: int = 5000) -> bool:
-    """Click an element whose visible text matches (partial). Returns success."""
+    """Click the first visible element whose text contains ``text`` (non-strict)."""
     try:
-        page.click(f"text={text}", timeout=timeout_ms)
+        page.get_by_text(text, exact=False).first.click(timeout=timeout_ms)
+        return True
+    except Exception:
+        return False
+
+
+def click_apply(page: Page, timeout_ms: int = 15000) -> bool:
+    """Click the first visible apply button/link whose text contains 'Apply'.
+
+    Falls back to a JS click for portals (e.g. Naukri) that render the apply
+    button off-screen or at zero size.
+    """
+    candidates = page.locator(
+        "button:has-text('Apply'), a:has-text('Apply'), [role='button']:has-text('Apply')"
+    )
+    try:
+        candidates.first.wait_for(state="attached", timeout=timeout_ms)
+    except Exception:
+        return False
+    for i in range(min(5, candidates.count())):
+        locator = candidates.nth(i)
+        try:
+            if locator.is_visible():
+                locator.click(timeout=5000)
+                return True
+        except Exception:
+            continue
+    try:
+        candidates.first.evaluate("el => el.click()")
         return True
     except Exception:
         return False
@@ -110,6 +153,30 @@ def detect_obstacle(page_url: str, page_text: str) -> Optional[str]:
     return None
 
 
+def job_experience_years(job: Dict) -> Optional[int]:
+    """Return the minimum years a job requires, or None when unknown.
+
+    Parses the URL slug, title, and description (e.g. ``5-to-10-years``,
+    ``5+ years``, ``fresher``, ``0 to 1 years``).
+    """
+    text = " ".join([
+        job.get("url", ""), job.get("title", ""), job.get("description", ""),
+    ]).lower()
+    if any(k in text for k in ("fresher", "entry level", "0 to 1 years", "0-1 years", "freshers")):
+        return 0
+    norm = re.sub(r"\s+", " ", text)
+    norm = re.sub(r"\bto\b", "-", norm)
+    norm = re.sub(r"[-–—\s]+", "-", norm)
+    match = re.search(r"(\d{1,2})-(\d{1,2})-(?:years?|yrs)\b", norm)
+    if match:
+        return int(match.group(1))
+    match = re.search(r"(\d{1,2})\+-(?:years?|yrs)\b", norm)
+    if match:
+        return int(match.group(1))
+    match = re.search(r"(\d{1,2})-(?:years?|yrs)\b", norm)
+    return int(match.group(1)) if match else None
+
+
 def collect_cards(page: Page, portal: str, max_results: int = 10) -> List[Dict]:
     """Extract job cards from the current search page using the portal's selectors."""
     config = PORTALS.get(portal)
@@ -130,12 +197,17 @@ def collect_cards(page: Page, portal: str, max_results: int = 10) -> List[Dict]:
             if url and url.startswith("/"):
                 url = f"https://{page.url.split('/')[2]}{url}"
 
+            title = (title_el.inner_text().strip() if title_el else "Unknown")
+            company = (company_el.inner_text().strip() if company_el else "")
+            if not company or company == "Unknown":
+                company = _fallback_company(card, title, url)
+
             jobs.append({
                 "id": f"{portal}-{hashlib_md5(url)}",
                 "source": portal,
                 "portal": portal,
-                "title": (title_el.inner_text().strip() if title_el else "Unknown"),
-                "company": (company_el.inner_text().strip() if company_el else "Unknown"),
+                "title": title,
+                "company": company or "Unknown",
                 "location": (location_el.inner_text().strip() if location_el else "India"),
                 "description": (desc_el.inner_text().strip() if desc_el else ""),
                 "url": url,
@@ -150,6 +222,41 @@ def hashlib_md5(value: str) -> str:
     import hashlib
 
     return hashlib.md5(value.encode()).hexdigest()[:10]
+
+
+def _fallback_company(card, title: str, url: str) -> str:
+    """Best-effort company extraction when the primary selector misses.
+
+    Tries the Naukri company link, then ``Title (@Company)``, then the URL slug
+    (e.g. ``job-listings-python-developer-infosys-infosys-kolkata-...``).
+    """
+    try:
+        link = card.query_selector("a[href*='/companies/']")
+        if link:
+            text = link.inner_text().strip()
+            if text:
+                return text
+    except Exception:
+        pass
+
+    match = re.search(r"\(@\s*([^)]+)\)", title) or re.search(r"\s@\s*([^\s@]+)", title)
+    if match:
+        return match.group(1).strip()
+
+    slug = url.split("/")[-1]
+    if slug.startswith("job-listings-"):
+        body = slug[len("job-listings-"):]
+        body = re.sub(r"-\d{4,}$", "", body)
+        body = re.sub(r"-\d+-to-\d+-years|-to-\d+-years|-\d+-years|-years", "", body)
+        title_slug = re.sub(r"[\s@()]+", "-", title.strip().lower()).strip("-")
+        tokens = [t for t in title_slug.split("-") if t]
+        tokens.sort(key=len, reverse=True)
+        for token in tokens:
+            body = re.sub(rf"(^|-){re.escape(token)}(?=-|$)", "-", body, count=1)
+        for city in INDIAN_CITIES:
+            body = re.sub(rf"-{re.escape(city)}(?=-|$)", "-", body, count=1)
+        return body.strip("-") if body else ""
+    return ""
 
 
 def login_selector(portal: str) -> Dict[str, str]:
