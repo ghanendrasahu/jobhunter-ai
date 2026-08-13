@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-from typing import List
+from typing import Dict, List
 from urllib.parse import quote
 
 logger = logging.getLogger(__name__)

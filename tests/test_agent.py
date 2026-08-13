@@ -1,5 +1,7 @@
 """Tests for the LangGraph agent nodes and pipeline integration."""
 
+from typing import Any, Dict
+
 import jobhunter.agent as agent
 from jobhunter.agent import create_agent, extract_resume, run_job_hunter
 from jobhunter.config import Settings
@@ -18,8 +20,8 @@ class FakeLLM:
         return type("Response", (), {"content": self.content})()
 
 
-def _state(**overrides) -> agent.JobHunterState:
-    base = {
+def _state(**overrides) -> Dict[str, Any]:
+    base: Dict[str, Any] = {
         "file_path": "",
         "resume_text": "",
         "search_query": "",
@@ -55,7 +57,7 @@ def test_default_llm_prefers_groq_when_configured(monkeypatch):
 def test_default_llm_falls_back_to_openai(monkeypatch):
     monkeypatch.setattr(
         agent, "get_settings",
-        lambda: Settings(openai_api_key="sk-test"),
+        lambda: Settings(openai_api_key="sk-test", groq_api_key=""),
     )
     llm = agent._default_llm()
     assert llm.openai_api_base is None  # None => OpenAI's default endpoint

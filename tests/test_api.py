@@ -2,6 +2,7 @@
 
 import io
 from pathlib import Path
+from typing import Optional
 
 import pytest
 from fastapi.testclient import TestClient
@@ -43,8 +44,8 @@ def client() -> TestClient:
     return _app()
 
 
-def _upload(client: TestClient, *, name: str = "resume.pdf", content: bytes = None, headers=None):
-    content = content or make_pdf("Python Developer resume")
+def _upload(client: TestClient, *, name: str = "resume.pdf", content: Optional[bytes] = None, headers=None):
+    content = content if content is not None else make_pdf("Python Developer resume")
     files = {"file": (name, io.BytesIO(content), "application/pdf")}
     return client.post("/upload_resume", files=files, headers=headers)
 

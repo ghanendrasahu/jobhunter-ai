@@ -148,7 +148,7 @@ def load_applied_jobs(resume_text: str) -> Set[str]:
     return set(load_history(resume_id_from_text(resume_text)).get("applied_job_ids", []))
 
 
-def save_applied_jobs(resume_text: str, job_ids: List[str], job_details: List[Dict] = None) -> None:
+def save_applied_jobs(resume_text: str, job_ids: List[str], job_details: Optional[List[Dict]] = None) -> None:
     """Record applied jobs for a resume (deduplicated by url and id)."""
     save_history(resume_id_from_text(resume_text), set(job_ids), job_details or [])
 

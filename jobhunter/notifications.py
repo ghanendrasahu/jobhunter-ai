@@ -6,13 +6,14 @@ import logging
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from smtplib import SMTP
+from typing import Optional
 
 from jobhunter.config import get_settings
 
 logger = logging.getLogger(__name__)
 
 
-def send_email_notification(subject: str, body: str, to_email: str = None) -> bool:
+def send_email_notification(subject: str, body: str, to_email: Optional[str] = None) -> bool:
     """Send an HTML email. Requires SMTP_* and NOTIFICATION_EMAIL in the environment.
 
     Returns True on success, False when not configured or on failure.
