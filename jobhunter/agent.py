@@ -36,8 +36,18 @@ class JobHunterState(TypedDict):
 
 
 def _default_llm() -> ChatOpenAI:
-    """Create the default chat model from settings (lazy, so tests can inject fakes)."""
+    """Create the default chat model from settings (lazy, so tests can inject fakes).
+
+    Prefers Groq when ``GROQ_API_KEY`` is configured; otherwise uses OpenAI.
+    """
     settings = get_settings()
+    if settings.groq_api_key:
+        return ChatOpenAI(
+            model=settings.groq_model,
+            api_key=settings.groq_api_key,
+            base_url=settings.groq_base_url,
+            temperature=0.0,
+        )
     return ChatOpenAI(model=settings.openai_model, temperature=0.0)
 
 

@@ -2,6 +2,7 @@
 
 import jobhunter.agent as agent
 from jobhunter.agent import create_agent, extract_resume, run_job_hunter
+from jobhunter.config import Settings
 
 
 class FakeLLM:
@@ -39,6 +40,26 @@ def test_extract_resume_success(sample_pdf):
 def test_extract_resume_missing_path():
     state = extract_resume(_state())
     assert state["error"]
+
+
+def test_default_llm_prefers_groq_when_configured(monkeypatch):
+    monkeypatch.setattr(
+        agent, "get_settings",
+        lambda: Settings(groq_api_key="gk-test", groq_model="llama-3.1-8b-instant"),
+    )
+    llm = agent._default_llm()
+    assert llm.openai_api_base == "https://api.groq.com/openai/v1"
+    assert llm.model_name == "llama-3.1-8b-instant"
+
+
+def test_default_llm_falls_back_to_openai(monkeypatch):
+    monkeypatch.setattr(
+        agent, "get_settings",
+        lambda: Settings(openai_api_key="sk-test"),
+    )
+    llm = agent._default_llm()
+    assert llm.openai_api_base is None  # None => OpenAI's default endpoint
+    assert llm.model_name == "gpt-4o-mini"
 
 
 def test_generate_query_uses_llm(sample_resume_text):

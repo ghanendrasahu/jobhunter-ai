@@ -175,6 +175,9 @@ docker compose up --build
 |--------------------------|----------|--------------------------------------------------|
 | `OPENAI_API_KEY`         | No*      | Enables LLM query generation (keyword fallback otherwise) |
 | `OPENAI_MODEL`           | No       | Chat model used for query generation (`gpt-4o-mini`) |
+| `GROQ_API_KEY`           | No*      | Prefer Groq over OpenAI when set (OpenAI-compatible, free tier) |
+| `GROQ_MODEL`             | No       | Groq model used when `GROQ_API_KEY` is set (`llama-3.3-70b-versatile`) |
+| `GROQ_BASE_URL`          | No       | Groq endpoint (defaults to `https://api.groq.com/openai/v1`) |
 | `ADZUNA_APP_ID`          | No       | Adzuna API app ID (live job search)              |
 | `ADZUNA_API_KEY`         | No       | Adzuna API key                                   |
 | `JOOBLE_API_KEY`         | No       | Jooble API key                                   |
