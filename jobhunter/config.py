@@ -87,8 +87,6 @@ class Settings(BaseSettings):
     fresher_only: bool = True
     # Jobs requiring more than this many years of experience are skipped.
     max_experience_years: int = 2
-    # Extra details injected into application forms (e.g. expected salary, notice period)
-    application_notes: str = ""
 
     # Runtime paths and limits
     upload_dir: Path = PROJECT_ROOT / "uploads"

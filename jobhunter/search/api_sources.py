@@ -53,6 +53,43 @@ def search_adzuna_jobs(query: str, location: str = "India") -> List[Dict]:
         return []
 
 
+def search_jsearch_jobs(query: str, country: str = "in") -> List[Dict]:
+    """Search the JSearch API (RapidAPI). Returns [] when not configured or on failure."""
+    settings = get_settings()
+    if not settings.jsearch_api_key:
+        return []
+
+    try:
+        url = "https://jsearch.p.rapidapi.com/search"
+        headers = {
+            "x-rapidapi-key": settings.jsearch_api_key,
+            "x-rapidapi-host": "jsearch.p.rapidapi.com",
+        }
+        params = {"query": query, "country": country, "num_pages": 1}
+        response = requests.get(url, params=params, headers=headers, timeout=20)
+        response.raise_for_status()
+
+        jobs: List[Dict] = []
+        for item in response.json().get("data", [])[:15]:
+            link = item.get("job_apply_link", "")
+            jobs.append({
+                "id": f"jsearch-{hashlib.md5(link.encode()).hexdigest()[:8]}",
+                "title": item.get("job_title", "Unknown"),
+                "company": item.get("employer_name", "Unknown"),
+                "location": item.get("job_city", "India") or "India",
+                "description": item.get("job_description", "") or "",
+                "url": link,
+                "salary_min": item.get("job_min_salary"),
+                "salary_max": item.get("job_max_salary"),
+                "salary_currency": item.get("job_salary_currency"),
+                "source": "jsearch",
+            })
+        return jobs
+    except Exception as exc:
+        logger.warning("JSearch search failed: %s", exc)
+        return []
+
+
 def search_jooble_jobs(query: str, location: str = "India") -> List[Dict]:
     """Search Jooble's API. Returns [] when not configured or on failure."""
     settings = get_settings()

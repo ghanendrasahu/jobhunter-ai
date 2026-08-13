@@ -97,9 +97,7 @@ JobHunter AI/
 ├── streamlit_app.py           # Streamlit entry point
 ├── main.py                    # Streamlit launcher alias (python main.py)
 ├── run.py                     # CLI entry point
-├── requirements.txt           # Full install (core + extras)
-├── requirements-core.txt      # Core-only deps (CLI + pipeline)
-├── requirements-dev.txt       # + test tooling (pytest)
+├── requirements.txt           # All deps (core + extras + test tooling)
 ├── setup.bat                  # Windows one-click setup
 ├── docker-compose.yml         # Containerized Streamlit service
 ├── pytest.ini
@@ -125,7 +123,7 @@ JobHunter AI/
 **Manual:**
 
 ```bash
-pip install -r requirements.txt        # or requirements-core.txt for CLI/pipeline only
+pip install -r requirements.txt
 
 # Optional: Playwright browser for scraping
 python -m playwright install chromium
@@ -253,7 +251,7 @@ Liveness probe — returns `{"status": "ok", "version": "3.0.0"}`.
 ## Running tests
 
 ```bash
-pip install -r requirements-dev.txt
+pip install -r requirements.txt
 python -m pytest
 # with coverage:
 python -m pytest --cov=jobhunter --cov-report=term-missing

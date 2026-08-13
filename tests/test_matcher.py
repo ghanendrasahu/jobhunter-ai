@@ -50,3 +50,27 @@ def test_score_jobs_sorts_descending():
     assert scored[0]["match_score"] >= scored[1]["match_score"]
     assert "match_score" in scored[0]
     assert "matched_skills" in scored[0]
+
+
+class _ScoringLLM:
+    """Returns a fixed semantic score on every invoke."""
+
+    def __init__(self, score: str):
+        self.score = score
+
+    def invoke(self, prompt: str) -> object:
+        return type("Response", (), {"content": self.score})()
+
+
+def test_score_jobs_blends_semantic_score_when_llm_provided():
+    jobs = [{"id": "1", "title": "Python job", "description": "Python machine learning required."}]
+    scored = score_jobs(jobs, RESUME, llm=_ScoringLLM("80"))
+    assert "semantic_score" in scored[0]
+    assert 0 <= scored[0]["match_score"] <= 100
+
+
+def test_score_jobs_falls_back_when_llm_returns_garbage():
+    jobs = [{"id": "1", "title": "Python job", "description": "Python machine learning required."}]
+    scored = score_jobs(jobs, RESUME, llm=_ScoringLLM("not-a-number"))
+    assert "semantic_score" not in scored[0]
+    assert "match_score" in scored[0]

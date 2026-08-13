@@ -41,6 +41,7 @@ def test_search_all_jobs_returns_portals_and_scraped(monkeypatch):
     monkeypatch.setattr(engine, "scrape_naukri_jobs", _fake_naukri)
     monkeypatch.setattr(engine, "search_adzuna_jobs", lambda *a, **k: [])
     monkeypatch.setattr(engine, "search_jooble_jobs", lambda *a, **k: [])
+    monkeypatch.setattr(engine, "search_jsearch_jobs", lambda *a, **k: [])
 
     jobs = engine.search_all_jobs("Python Developer")
     sources = {j["source"] for j in jobs}
@@ -56,7 +57,28 @@ def test_search_all_jobs_deduplicates_urls(monkeypatch):
     monkeypatch.setattr(engine, "scrape_naukri_jobs", _fake_naukri_dup)
     monkeypatch.setattr(engine, "search_adzuna_jobs", lambda *a, **k: [])
     monkeypatch.setattr(engine, "search_jooble_jobs", lambda *a, **k: [])
+    monkeypatch.setattr(engine, "search_jsearch_jobs", lambda *a, **k: [])
 
     jobs = engine.search_all_jobs("Python Developer")
     urls = [j["url"] for j in jobs if not j.get("is_portal_link")]
     assert len(urls) == len(set(urls))  # no duplicate scraped urls
+
+
+async def _fake_jsearch_same_job(_query):
+    # Same company + title as the LinkedIn job, but a different URL.
+    return [{"id": "jsearch-1", "title": "Y", "company": "C", "url": "https://other.com/j2", "source": "jsearch"}]
+
+
+def test_search_all_jobs_deduplicates_company_title(monkeypatch):
+    monkeypatch.setattr(engine, "scrape_indeed_jobs", _fake_indeed)
+    monkeypatch.setattr(engine, "scrape_linkedin_jobs", _fake_linkedin)
+    monkeypatch.setattr(engine, "scrape_naukri_jobs", _fake_naukri)
+    monkeypatch.setattr(engine, "search_adzuna_jobs", lambda *a, **k: [])
+    monkeypatch.setattr(engine, "search_jooble_jobs", lambda *a, **k: [])
+    monkeypatch.setattr(engine, "search_jsearch_jobs", _fake_jsearch_same_job)
+
+    jobs = engine.search_all_jobs("Python Developer")
+    # 5 portal links + 2 scraped (LinkedIn "Y@C" dedupes the jsearch "Y@C").
+    assert len(jobs) == 7
+    non_portal = [j for j in jobs if not j.get("is_portal_link")]
+    assert len(non_portal) == 2

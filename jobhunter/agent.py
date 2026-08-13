@@ -122,22 +122,26 @@ def _keyword_query(resume: str) -> str:
     return "Software Engineer"
 
 
-def find_jobs(state: JobHunterState) -> JobHunterState:
-    """Search for jobs using the generated query and score them against the resume."""
-    if state.get("error"):
-        return state
-    query = state.get("search_query", "")
-    if not query:
-        return {**state, "error": "search_query missing – cannot search jobs"}
-    try:
-        jobs = search_all_jobs(query)
-        logger.info("Found %d jobs for query: %s", len(jobs), query)
-        if jobs and state.get("resume_text"):
-            jobs = score_jobs(jobs, state["resume_text"])
-        return {**state, "jobs": jobs, "error": ""}
-    except Exception as exc:
-        logger.exception("Job search failed")
-        return {**state, "error": f"Failed to search jobs: {exc}"}
+def _make_find_jobs(llm: ChatOpenAI):
+    """Build the job-search node bound to a specific LLM (semantic scoring)."""
+
+    def find_jobs(state: JobHunterState) -> JobHunterState:
+        if state.get("error"):
+            return state
+        query = state.get("search_query", "")
+        if not query:
+            return {**state, "error": "search_query missing – cannot search jobs"}
+        try:
+            jobs = search_all_jobs(query)
+            logger.info("Found %d jobs for query: %s", len(jobs), query)
+            if jobs and state.get("resume_text"):
+                jobs = score_jobs(jobs, state["resume_text"], llm)
+            return {**state, "jobs": jobs, "error": ""}
+        except Exception as exc:
+            logger.exception("Job search failed")
+            return {**state, "error": f"Failed to search jobs: {exc}"}
+
+    return find_jobs
 
 
 def apply_jobs(state: JobHunterState) -> JobHunterState:
@@ -186,7 +190,7 @@ def create_agent(llm: ChatOpenAI = None):
     workflow = StateGraph(JobHunterState)
     workflow.add_node("extract_resume", extract_resume)
     workflow.add_node("generate_query", _make_generate_query(llm))
-    workflow.add_node("find_jobs", find_jobs)
+    workflow.add_node("find_jobs", _make_find_jobs(llm))
     workflow.add_node("apply_jobs", apply_jobs)
 
     workflow.add_edge(START, "extract_resume")
