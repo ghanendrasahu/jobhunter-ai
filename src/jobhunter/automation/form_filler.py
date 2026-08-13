@@ -9,10 +9,21 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import TypedDict
 
 from playwright.sync_api import Page
 
 logger = logging.getLogger(__name__)
+
+
+class FillStats(TypedDict):
+    """Aggregate result of filling a form."""
+
+    filled: int
+    skipped: int
+    unknown: int
+    file_uploaded: bool
+    missing: list[str]
 
 # field_name -> (aliases matched against normalized label/id/name/placeholder)
 _FIELD_ALIASES: dict[str, list[str]] = {
@@ -124,13 +135,14 @@ def _value_for(field: str, profile: dict) -> str | None:
     return None
 
 
-def fill_form(page: Page, profile: dict, resume_pdf: str | None = None) -> dict:
+def fill_form(page: Page, profile: dict, resume_pdf: str | None = None) -> FillStats:
     """Auto-fill an application form from the profile. Returns fill statistics.
 
     Traverses the main document and any iframes (many ATS forms render inside
     frames), filling each visible, classified field it can map to the profile.
+    Classified fields with no profile value are collected in ``missing``.
     """
-    stats = {"filled": 0, "skipped": 0, "unknown": 0, "file_uploaded": False}
+    stats: FillStats = {"filled": 0, "skipped": 0, "unknown": 0, "file_uploaded": False, "missing": []}
 
     seen_handles: set[int] = set()
     for frame in page.frames:
@@ -148,10 +160,11 @@ def fill_form(page: Page, profile: dict, resume_pdf: str | None = None) -> dict:
             seen_handles.add(key)
             if _fill_control(handle, profile, resume_pdf, stats):
                 stats["filled"] += 1
+    stats["missing"] = sorted(set(stats["missing"]))
     return stats
 
 
-def _fill_control(handle, profile: dict, resume_pdf: str | None, stats: dict) -> bool:
+def _fill_control(handle, profile: dict, resume_pdf: str | None, stats: FillStats) -> bool:
     """Fill a single control. Returns True when a value was written."""
     try:
         tag = handle.evaluate("el => el.tagName")
@@ -180,6 +193,8 @@ def _fill_control(handle, profile: dict, resume_pdf: str | None, stats: dict) ->
     if tag == "SELECT":
         if _fill_select(handle, profile, field):
             return True
+        if not _value_for(field, profile):
+            stats["missing"].append(field)
         return False
 
     el_type = ""
@@ -216,6 +231,8 @@ def _fill_control(handle, profile: dict, resume_pdf: str | None, stats: dict) ->
             return True
         except Exception as exc:
             logger.debug("Fill failed for %r: %s", field, exc)
+    else:
+        stats["missing"].append(field)
     return False
 
 

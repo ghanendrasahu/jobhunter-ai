@@ -3,11 +3,13 @@
 from unittest.mock import MagicMock
 
 from jobhunter.automation.strategies import (
+    _extract_salary_text,
     build_search_url,
     click_apply,
     click_by_text,
     detect_obstacle,
     fill_input,
+    parse_posted_days,
 )
 
 
@@ -80,3 +82,15 @@ def test_click_apply_missing_returns_false():
 def test_detect_obstacle():
     assert detect_obstacle("https://naukri.com", "Please complete a CAPTCHA") is not None
     assert detect_obstacle("https://naukri.com", "Showing 120 jobs for you") is None
+
+
+def test_parse_posted_days():
+    assert parse_posted_days("Posted 3 days ago") == 3
+    assert parse_posted_days("Just posted") == 0
+    assert parse_posted_days("no date") is None
+
+
+def test_extract_salary_text():
+    assert _extract_salary_text("₹6-8 LPA salary") == "₹6-8 LPA"
+    assert _extract_salary_text("12 - 18 LPA") == "12 - 18 LPA"
+    assert _extract_salary_text("no salary info") == ""

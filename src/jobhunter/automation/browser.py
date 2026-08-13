@@ -22,6 +22,14 @@ from playwright.sync_api import BrowserContext, Page, Playwright, sync_playwrigh
 
 logger = logging.getLogger(__name__)
 
+
+class _BrowserMissing(Exception):
+    """Internal marker: the requested browser executable is not installed."""
+
+    def __init__(self, channel: str | None) -> None:
+        self.channel = channel
+        super().__init__(f"browser executable missing for channel={channel}")
+
 # Top-level Chrome "User Data" files needed for a working profile.
 _PROFILE_TOP_FILES = ("Local State", "First Run")
 # Files inside the profile dir needed for cookies/session + basic config.
@@ -80,13 +88,34 @@ class BrowserSession:
             if launch_dir:
                 self.using_default_profile = True
 
+        prefer_chrome = bool(launch_dir or self.channel == "chrome")
         try:
-            self._context = self._launch(
-                user_data_dir=launch_dir or self.state_dir / "profile",
-                channel="chrome" if launch_dir else self.channel,
-            )
+            if prefer_chrome:
+                # System Chrome is the best fingerprint. Verify the *bundled*
+                # Chromium exists up front so we can raise a clear error if the
+                # fallback is missing too.
+                self._verify_bundled_chromium()
+                self._context = self._launch(
+                    user_data_dir=launch_dir or self.state_dir / "profile",
+                    channel="chrome",
+                )
+            else:
+                self._verify_bundled_chromium()
+                self._context = self._launch(
+                    user_data_dir=launch_dir or self.state_dir / "profile",
+                    channel=self.channel or None,
+                )
+        except _BrowserMissing as exc:
+            raise RuntimeError(
+                "The Playwright browser is not installed. Run:\n"
+                "    python -m playwright install chromium"
+            ) from exc
         except Exception as exc:
+            # Chrome is installed but failed to launch (e.g. profile lock or
+            # a CDP/version conflict). Fall back to bundled Chromium rather
+            # than crashing with the opaque Playwright message.
             logger.warning("Could not launch Chrome (%s); falling back to bundled chromium", exc)
+            self._verify_bundled_chromium()
             self._context = self._launch(
                 user_data_dir=launch_dir or self.state_dir / "profile",
                 channel=None,
@@ -98,6 +127,23 @@ class BrowserSession:
         logger.info("Browser session started (channel=%s, headless=%s)", self.channel, self.headless)
         assert self._context is not None
         return self._context
+
+    def _verify_bundled_chromium(self) -> None:
+        """Raise a clear error when Playwright's bundled Chromium is missing.
+
+        ``chromium.executable_path`` points at the bundled build (the one that
+        ``launch_persistent_context`` without a ``channel`` uses). We check it
+        upfront so users see a helpful install hint instead of Playwright's
+        cryptic "Executable doesn't exist" crash.
+        """
+        if self._playwright is None:
+            raise RuntimeError("browser must be started first")
+        try:
+            executable = self._playwright.chromium.executable_path
+        except Exception:
+            raise _BrowserMissing(None) from None
+        if not executable or not Path(executable).exists():
+            raise _BrowserMissing(None)
 
     def _apply_stealth(self) -> None:
         """Mask automation signals that trigger bot checks / Google sign-in blocks."""
@@ -168,6 +214,29 @@ class BrowserSession:
         if self._context is None:
             raise RuntimeError("Browser session not started. Call start() first.")
         return self._context.new_page()
+
+    def new_tab(self, url: str = "") -> Page:
+        """Open a new tab (optionally navigated) and return it."""
+        page = self.new_page()
+        if url:
+            page.goto(url, timeout=45000, wait_until="domcontentloaded")
+        return page
+
+    def close_page(self, page: Page) -> None:
+        """Close a tab, swallowing errors (page may already be closed)."""
+        try:
+            if page and not page.is_closed():
+                page.close()
+        except Exception as exc:  # pragma: no cover - best effort cleanup
+            logger.debug("Could not close page: %s", exc)
+
+    def close_all_pages(self) -> None:
+        """Close every open tab except the first (keeps the window tidy)."""
+        if self._context is None:
+            return
+        pages = self._context.pages
+        for page in pages[1:]:
+            self.close_page(page)
 
     def save_state(self) -> None:
         """Persist cookies/localStorage so logins survive between runs."""

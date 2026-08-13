@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+import queue
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -13,6 +15,8 @@ import streamlit as st
 
 from jobhunter.agent import run_job_hunter
 from jobhunter.automation import run_application_pipeline
+from jobhunter.automation.profile import profile_from_resume
+from jobhunter.automation.roles import suggest_roles, tier_display
 from jobhunter.config import get_settings
 from jobhunter.domains.resume import extract_text_from_pdf
 from jobhunter.services.analytics import get_analytics_data
@@ -22,6 +26,14 @@ from jobhunter.storage.history import (
     list_all_histories,
     list_resumes,
     save_resume,
+)
+from jobhunter.storage.profiles import (
+    load_profile,
+    load_selected_roles,
+    load_suggested_roles,
+    save_profile,
+    save_selected_roles,
+    save_suggested_roles,
 )
 from jobhunter.ui.components import render_results
 
@@ -105,26 +117,71 @@ def job_search_page() -> None:
         render_results(result)
 
 
+_PROFILE_FIELDS = [
+    ("full_name", "Full name"),
+    ("email", "Email"),
+    ("phone", "Phone"),
+    ("location", "Location"),
+    ("current_title", "Current title / designation"),
+    ("current_ctc", "Current CTC"),
+    ("expected_ctc", "Expected CTC"),
+    ("notice_period", "Notice period"),
+    ("linkedin", "LinkedIn URL"),
+    ("experience_years", "Experience (years)"),
+]
+
+
+def _status_icon(level: str) -> str:
+    return {"error": "❌", "warning": "⚠️", "info": "ℹ️"}.get(level, "ℹ️")
+
+
+def _run_agent_worker(
+    status_queue: queue.Queue,
+    stop_event: threading.Event,
+    kwargs: dict,
+) -> None:
+    """Run the pipeline in a background thread, streaming status via a queue."""
+    def on_status(level: str, stage: str, message: str) -> None:
+        status_queue.put({"kind": "status", "level": level, "stage": stage, "message": message})
+
+    try:
+        result = run_application_pipeline(
+            **kwargs,
+            on_status=on_status,
+            stop_event=stop_event,
+        )
+        status_queue.put({"kind": "done", "result": result})
+    except Exception as exc:  # pragma: no cover - surfaced in the UI
+        status_queue.put({"kind": "error", "message": str(exc)})
+
+
 def auto_apply_page() -> None:
-    """Semi-autonomous application agent (Naukri / Indeed / Google Jobs)."""
+    """Continuous, interactive auto-apply agent (profile → roles → run)."""
     settings = get_settings()
     st.markdown("## 🤖 Auto Apply Agent")
     st.markdown(
-        "The agent logs into your portals, finds jobs, scores them against your resume "
-        "with AI, and fills application forms. **Human mode** pre-fills and lets you "
-        "click submit (handles CAPTCHAs); **auto mode** submits automatically."
+        "The agent uses **your existing Chrome logins** (Naukri/Indeed), searches based on "
+        "**priority roles** from your resume (AI/ML/Data/Analyst first), and applies in "
+        "batches — pausing between cycles until you press **Stop**."
     )
 
-    col_left, col_right = st.columns([2, 1])
-    with col_left:
-        query = st.text_input("🔍 Search query", value="Python Developer")
+    step = st.radio(
+        "Step",
+        ["1. Resume & Profile", "2. Priority Roles", "3. Run"],
+        horizontal=True,
+        key="aa_step",
+    )
+
+    # ------------------------------------------------------------------ step 1
+    if step.startswith("1"):
+        st.markdown("### 📄 Step 1 — Resume & Profile")
         saved = list_resumes()
         resume_source = st.radio("Resume source", ["Upload new PDF", "Use saved resume"], horizontal=True)
 
         resume_text = ""
-        resume_pdf = None
+        resume_pdf: str | None = None
         if resume_source == "Upload new PDF":
-            uploaded = st.file_uploader("Choose a PDF resume", type=["pdf"])
+            uploaded = st.file_uploader("Choose a PDF resume", type=["pdf"], key="aa_upload")
             if uploaded:
                 if uploaded.size > MAX_UPLOAD_MB * 1024 * 1024:
                     st.error(f"Max {MAX_UPLOAD_MB} MB")
@@ -136,72 +193,216 @@ def auto_apply_page() -> None:
                     st.success(f"✅ {uploaded.name} parsed ({len(resume_text)} chars)")
         elif saved:
             names = {f"{r['name']} ({r['id'][:8]})": r for r in saved}
-            selected = st.selectbox("Select saved resume", list(names.keys()))
+            selected = st.selectbox("Select saved resume", list(names.keys()), key="aa_saved")
             resume_pdf = names[selected]["file_path"]
             resume_text = extract_text_from_pdf(resume_pdf)
-
-        with st.expander("⚙️ Agent settings"):
-            mode = st.selectbox("Apply mode", ["human", "auto", "off"],
-                                index=["human", "auto", "off"].index(settings.auto_apply_mode))
-            portals = st.multiselect("Portals", ["naukri", "indeed"], default=["naukri", "indeed"])
-            max_apps = st.slider("Max applications per run", 1, 10, settings.max_applications_per_run)
-            st.caption("No portal passwords needed: leave `.env` credentials empty and log in once in the opened browser window (session persists).")
-
-    with col_right:
-        st.markdown("#### Apply from your account → confirmation emails")
-        st.markdown("Two ways (either gives you real confirmation emails):")
-        st.markdown("1. **`.env` credentials** — `NAUKRI_EMAIL/NAUKRI_PASSWORD`, `INDEED_EMAIL/INDEED_PASSWORD`. Auto-login via the portal's own form (no Google block). Emails go to that account's email.")
-        st.markdown("2. **Default-Chrome sessions** — your existing logins are reused automatically (copied profile).")
-
-    if resume_text and st.button("🚀 Run Apply Agent", type="primary", use_container_width=True):
-        with st.status("Running apply agent…", expanded=True) as status:
-            status_log: dict[str, str] = {}
-
-            def on_status(level: str, stage: str, message: str) -> None:
-                status_log[f"{stage}"] = message
-                icon = {"error": "❌", "warning": "⚠️", "info": "ℹ️"}.get(level, "ℹ️")
-                st.write(f"{icon} **{stage.title()}:** {message}")
-
-            result = run_application_pipeline(
-                query=query,
-                resume_text=resume_text,
-                resume_pdf=resume_pdf,
-                portals=portals or None,
-                mode=mode,
-                max_applications=max_apps,
-                on_status=on_status,
-            )
-            status.update(label="Apply agent finished", state="complete")
-
-        results = result.get("results", [])
-        st.markdown("## 📋 Outcome")
-        if results:
-            df = pd.DataFrame([
-                {
-                    "Title": r.get("title"),
-                    "Company": r.get("company"),
-                    "Source": r.get("source"),
-                    "Status": r.get("status"),
-                    "Score": r.get("evaluation", {}).get("score"),
-                }
-                for r in results
-            ])
-            st.dataframe(df, use_container_width=True)
-            for r in results:
-                st.markdown(f"- **{r.get('title')}** @ {r.get('company')} → `{r.get('status')}` — {r.get('detail')}")
         else:
-            st.warning("No applications attempted. Check the log above (likely missing credentials or blocked).")
+            st.warning("No saved resumes. Upload one first.")
 
-        with st.expander("🔎 Agent log"):
-            for entry in result.get("log", []):
-                icon = {"error": "❌", "warning": "⚠️", "info": "ℹ️"}.get(entry["level"], "ℹ️")
-                st.write(f"{icon} `{entry['stage']}` — {entry['message']}")
+        if not resume_text:
+            st.stop()
 
-        if resume_source == "Upload new PDF" and resume_pdf:
-            try:
-                os.unlink(resume_pdf)
-            except OSError:
-                pass
+        extracted = profile_from_resume(resume_text)
+        prior = load_profile()
+        st.caption("Confirm or correct the details extracted from your resume. Missing values are filled automatically with what you enter here.")
+
+        cols = st.columns(2)
+        updated: dict = {}
+        for i, (field, label) in enumerate(_PROFILE_FIELDS):
+            with cols[i % 2]:
+                updated[field] = st.text_input(
+                    label,
+                    value=prior.get(field) or extracted.get(field, ""),
+                    key=f"pf_{field}",
+                )
+        skills = st.text_input(
+            "Skills (comma-separated)",
+            value=", ".join(prior.get("skills") or extracted.get("skills", [])),
+            key="pf_skills",
+        )
+        updated["skills"] = [s.strip() for s in skills.split(",") if s.strip()]
+        cover_letter = st.text_area(
+            "Cover letter (optional — used when a form asks for one)",
+            value=prior.get("cover_letter") or extracted.get("cover_letter", ""),
+            height=120,
+            key="pf_cover",
+        )
+        updated["cover_letter"] = cover_letter
+
+        if st.button("💾 Save Profile", type="primary"):
+            save_profile(updated)
+            st.session_state["aa_resume_text"] = resume_text
+            st.session_state["aa_resume_pdf"] = resume_pdf
+            st.success("Profile saved. Continue to Step 2.")
+
+    # ------------------------------------------------------------------ step 2
+    elif step.startswith("2"):
+        st.markdown("### ⭐ Step 2 — Priority Roles")
+        resume_text = st.session_state.get("aa_resume_text", "")
+        if not resume_text:
+            st.warning("Go back to Step 1 and save your profile first.")
+            st.stop()
+
+        suggested = load_suggested_roles()
+        if not suggested:
+            with st.spinner("Analyzing your resume for suitable roles..."):
+                suggested = suggest_roles(resume_text)
+                save_suggested_roles(suggested)
+
+        st.caption("⭐ Priority (AI/ML/Data/Analyst) roles are searched first. Select what you want the agent to look for.")
+        selected_roles: list[str] = []
+        for tier in (1, 2, 3):
+            tier_roles = [r for r in suggested if r["tier"] == tier]
+            if not tier_roles:
+                continue
+            st.markdown(f"**{tier_display(tier)}**")
+            options = {f"{r['title']} ({r['score'] * 100:.0f}%)": r["title"] for r in tier_roles}
+            default_checked = [label for label, title in options.items() if tier == 1]
+            prior_selected = set(load_selected_roles())
+            picked = st.pills(
+                "Roles",
+                options=list(options.keys()),
+                selection_mode="multi",
+                default=default_checked,
+                key=f"roles_tier_{tier}",
+                label_visibility="collapsed",
+            )
+            for label in picked:
+                selected_roles.append(options[label])
+
+        # Merge with previously chosen roles that may not be in this resume's suggestions.
+        for prior_role in prior_selected:
+            if prior_role not in selected_roles:
+                selected_roles.append(prior_role)
+
+        if st.button("💾 Save Roles", type="primary"):
+            save_selected_roles(selected_roles)
+            st.session_state["aa_roles"] = selected_roles
+            st.success(f"Saved {len(selected_roles)} role(s). Continue to Step 3.")
+
+    # ------------------------------------------------------------------ step 3
+    else:
+        st.markdown("### 🚀 Step 3 — Run")
+        resume_text = st.session_state.get("aa_resume_text", "")
+        if not resume_text:
+            st.warning("Go back to Step 1 and save your profile first.")
+            st.stop()
+
+        roles = st.session_state.get("aa_roles") or load_selected_roles() or []
+        profile = load_profile() or profile_from_resume(resume_text)
+
+        col_l, col_r = st.columns([2, 1])
+        with col_l:
+            query = st.text_input("🔍 Fallback search query (used when no roles are selected)", value="Python Developer", key="aa_query")
+            mode = st.selectbox("Apply mode", ["human", "auto"], index=0 if settings.auto_apply_mode == "human" else 1, key="aa_mode",
+                                help="auto = submit filled forms (skips forms missing details); human = you submit each.")
+            portals = st.multiselect("Portals", ["naukri", "indeed"], default=["naukri", "indeed"], key="aa_portals")
+        with col_r:
+            batch_size = st.number_input("Applications per cycle", min_value=1, max_value=20, value=int(settings.batch_size), key="aa_batch")
+            cooldown = st.number_input("Cooldown between cycles (seconds)", min_value=0, max_value=3600, value=int(settings.cooldown_seconds), step=30, key="aa_cooldown")
+            continuous = st.checkbox("Keep running until I press Stop", value=True, key="aa_continuous",
+                                     help="Runs cycle after cycle, rotating roles, until you stop it.")
+            prioritize_remote = st.checkbox("Prioritize work-from-home roles", value=settings.prioritize_remote, key="aa_remote")
+
+        if roles:
+            st.info(f"Searching priority roles: **{', '.join(roles[:8])}**" + ("…" if len(roles) > 8 else ""))
+
+        status_queue_raw = st.session_state.get("aa_queue")
+        status_queue: queue.Queue | None = status_queue_raw if isinstance(status_queue_raw, queue.Queue) else None
+        stop_event: threading.Event | None = st.session_state.get("aa_stop")
+        thread: threading.Thread | None = st.session_state.get("aa_thread")
+        running = thread is not None and thread.is_alive()
+
+        col_b1, col_b2, col_b3 = st.columns([1, 1, 1])
+        with col_b1:
+            if st.button("▶️ Start", type="primary", use_container_width=True, disabled=running):
+                q: queue.Queue = queue.Queue()
+                ev = threading.Event()
+                kwargs = {
+                    "query": query,
+                    "resume_text": resume_text,
+                    "resume_pdf": st.session_state.get("aa_resume_pdf"),
+                    "portals": portals or None,
+                    "mode": mode,
+                    "profile": profile,
+                    "roles": roles or None,
+                    "continuous": continuous,
+                    "batch_size": int(batch_size),
+                    "cooldown_seconds": int(cooldown),
+                    "max_applications": int(batch_size),
+                    "prioritize_remote": prioritize_remote,
+                }
+                t = threading.Thread(target=_run_agent_worker, args=(q, ev, kwargs), daemon=True)
+                t.start()
+                st.session_state["aa_queue"] = q
+                st.session_state["aa_stop"] = ev
+                st.session_state["aa_thread"] = t
+                st.session_state["aa_log"] = []
+                st.session_state["aa_done"] = None
+                st.rerun()
+        with col_b2:
+            if st.button("⏹ Stop", use_container_width=True, disabled=not running):
+                if stop_event:
+                    stop_event.set()
+                st.rerun()
+        with col_b3:
+            if st.button("🧹 Reset", use_container_width=True, disabled=running):
+                for key in ("aa_queue", "aa_stop", "aa_thread", "aa_log", "aa_done"):
+                    st.session_state.pop(key, None)
+                st.rerun()
+
+        if running:
+            st.warning("Agent is running in the background. New log lines appear as they arrive — wait a moment and the list refreshes on the next interaction.")
+
+        log: list[dict] = st.session_state.get("aa_log", [])
+        done_result = st.session_state.get("aa_done")
+        if status_queue is not None:
+            drain = True
+            while drain:
+                try:
+                    entry = status_queue.get_nowait()
+                    if entry["kind"] == "status":
+                        log.append(entry)
+                    elif entry["kind"] == "done":
+                        st.session_state["aa_done"] = entry["result"]
+                        done_result = entry["result"]
+                    elif entry["kind"] == "error":
+                        log.append({"level": "error", "stage": "run", "message": entry["message"]})
+                except queue.Empty:
+                    drain = False
+            st.session_state["aa_log"] = log[-400:]
+
+        if log:
+            with st.expander("📜 Live Agent Log", expanded=True):
+                for entry in log:
+                    st.markdown(f"{_status_icon(entry['level'])} `{entry['stage']}` — {entry['message']}")
+
+        if done_result is not None:
+            results = done_result.get("results", [])
+            cycles = done_result.get("cycles", 1)
+            st.markdown("## 📋 Outcome")
+            st.caption(f"Completed {cycles} cycle(s) — {len(results)} application attempt(s).")
+            if results:
+                df = pd.DataFrame([
+                    {
+                        "Title": r.get("title"),
+                        "Company": r.get("company"),
+                        "Source": r.get("source"),
+                        "Status": r.get("status"),
+                        "Score": r.get("evaluation", {}).get("score"),
+                    }
+                    for r in results
+                ])
+                st.dataframe(df, use_container_width=True)
+                for r in results:
+                    st.markdown(f"- **{r.get('title')}** @ {r.get('company')} → `{r.get('status')}` — {r.get('detail')}")
+                needs_help = [r for r in results if r.get("status") in ("needs_review", "blocked", "no_apply_button")]
+                if needs_help:
+                    st.markdown("### 🤝 Needs your help")
+                    for r in needs_help:
+                        st.markdown(f"- ❌ **{r.get('title')}** @ {r.get('company')} — {r.get('detail')}")
+            else:
+                st.warning("No applications attempted. Check the log above (likely missing credentials or blocked).")
 
 
 def dashboard_page() -> None:

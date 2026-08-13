@@ -23,6 +23,8 @@ dashboard**, a **FastAPI REST endpoint**, and a **CLI**.
 - 🔐 **Optional REST API** with API-key auth and rate limiting
 - 📧 **Email notifications** after each pipeline run (optional)
 - 🤖 **Semi-autonomous apply agent** — logs into Naukri/Indeed, scores jobs with Groq, and auto-fills application forms (human-in-the-loop or full-auto)
+- 🎯 **Priority role discovery** — suggests AI/ML/Data/Analyst roles from your resume, lets you pick the ones to hunt, and ranks every job by recency, fresher-fit, salary, remote/WFH, and role tier
+- 🔁 **Continuous auto-apply** — runs batch-after-batch on a cooldown, rotating your priority roles, deduping against applied history, until you press Stop
 
 ---
 
@@ -87,13 +89,15 @@ JobHunter AI/
 │       │       └── engine.py  # search orchestration + dedupe
 │       ├── storage/
 │       │   ├── history.py     # resume storage + application history + CSV
-│       │   └── settings.py    # SQLite-persisted UI settings
+│       │   ├── settings.py    # SQLite-persisted UI settings
+│       │   └── profiles.py    # SQLite profile + selected/suggested roles
 │       ├── services/
 │       │   ├── analytics.py   # dashboard aggregation
 │       │   └── notifications.py  # SMTP email alerts
 │       ├── automation/        # semi-autonomous apply agent
 │       │   ├── browser.py, evaluator.py, form_filler.py,
-│       │   ├── profile.py, strategies.py, apply_agent.py, apply.py
+│       │   ├── profile.py, strategies.py, roles.py, prioritizer.py,
+│       │   ├── apply_agent.py, apply.py
 │       ├── api/
 │       │   └── server.py      # FastAPI app factory
 │       └── ui/
@@ -115,8 +119,11 @@ JobHunter AI/
 │   ├── test_settings.py       # SQLite settings store
 │   ├── test_services.py       # analytics + email notifications
 │   ├── test_api_sources.py    # Adzuna / Jooble / JSearch
-│   ├── test_strategies.py     # portal strategies
-│   └── test_browser.py        # minimal profile copy
+│   ├── test_strategies.py     # portal strategies + posted/salary extraction
+│   ├── test_browser.py        # minimal profile copy
+│   ├── test_roles.py          # role discovery, priority tiers, job prioritizer
+│   ├── test_profiles.py       # profile + selected/suggested roles store
+│   └── test_browser_preflight.py  # missing-browser error
 ├── pyproject.toml             # deps, console scripts, pytest/ruff/mypy config
 ├── requirements.txt           # flat runtime pins
 ├── requirements-dev.txt       # flat dev pins (tests, ruff, mypy)
@@ -207,14 +214,30 @@ python -m jobhunter.automation.apply --query "Python Developer" --resume resume.
 
 # Full-auto mode (agent clicks submit)
 python -m jobhunter.automation.apply -q "Data Analyst" -r resume.pdf --mode auto --portals naukri indeed --max 3
+
+# Continuous mode: keep running until Ctrl-C, rotating priority roles on a cooldown
+python -m jobhunter.automation.apply -r resume.pdf --mode auto --continuous --cooldown 300 --batch 10
 ```
 
-Or use the **🤖 Auto Apply** page in the Streamlit dashboard. The agent:
+Or use the **🤖 Auto Apply** page in the Streamlit dashboard (a 3-step wizard):
+
+1. **Profile** — paste or generate a profile from your resume (stored for reuse).
+2. **Priority roles** — the app suggests AI/ML/Data/Analyst roles from your resume across
+   three tiers (⭐ Priority / Software / Other); pick the ones you want to hunt.
+3. **Run** — set the apply mode, portals, batch size, cooldown and whether to keep going until
+   you press **Stop**. A live console shows each job being scored, filled and submitted.
+
+The agent:
 1. Reuses a persistent logged-in browser session (`data/browser_state/`), so you log into Naukri/Indeed once.
-2. Searches each portal, then has Groq score every job against your resume (keyword fallback offline).
-3. Opens the apply form and pre-fills it from your resume profile.
-4. In **human** mode you finish + submit (needed for CAPTCHAs / multi-step ATS forms); in **auto** mode it submits for you.
-5. Records every application to your history (visible on the Dashboard).
+2. Searches each portal for your selected roles, then **ranks every job** — fresher postings,
+   fresher-friendly roles, remote/WFH work, higher salary, and tier-1 titles get priority.
+3. Has Groq score each top job against your resume (keyword fallback offline).
+4. Opens the apply form (capturing portal popups) and pre-fills it from your resume profile,
+   reporting which fields it couldn't fill so nothing is silently skipped.
+5. In **human** mode you finish + submit (needed for CAPTCHAs / multi-step ATS forms); in **auto** mode it submits for you.
+6. Records every application to your history (visible on the Dashboard), skips jobs you've
+   already applied to, and — in continuous mode — waits the cooldown, rotates to the next role,
+   and runs again until you press Stop.
 
 > **Two ways to use your account (both give you real confirmation emails):**
 > 1. **`.env` credentials** — set `NAUKRI_EMAIL/NAUKRI_PASSWORD` (and/or
@@ -258,6 +281,9 @@ Or use the **🤖 Auto Apply** page in the Streamlit dashboard. The agent:
 | `MANUAL_LOGIN_TIMEOUT`   | No       | Seconds to wait for manual login (default `180`) |
 | `FRESHER_ONLY`           | No       | Fresher-only mode: augments the query, skips senior roles (default `true`) |
 | `MAX_EXPERIENCE_YEARS`   | No       | Jobs requiring more years than this are skipped (default `2`) |
+| `BATCH_SIZE`             | No       | Applications per continuous-mode cycle (default `10`)         |
+| `COOLDOWN_SECONDS`       | No       | Pause between continuous-mode cycles (default `300`)          |
+| `PRIORITIZE_REMOTE`      | No       | Give remote/WFH jobs a score boost (default `true`)           |
 
 \* *The pipeline works fully without an OpenAI key — query generation falls back to keyword extraction.*
 
@@ -293,9 +319,10 @@ uv run pytest --cov=jobhunter --cov-report=term-missing --cov-fail-under=40
 Or with pip: `pip install -r requirements-dev.txt && python -m pytest --cov=jobhunter --cov-report=term-missing`
 
 Test coverage includes PDF extraction, match scoring, history/resume management, the SQLite
-settings store, search orchestration & deduplication, the Adzuna/Jooble/JSearch API clients, the
-full LangGraph pipeline, portal strategies, the minimal Chrome profile copy, the REST API
-(validation, auth, rate limiting), analytics aggregation, and SMTP notifications.
+settings & profile/roles stores, search orchestration & deduplication, the Adzuna/Jooble/JSearch
+API clients, the full LangGraph pipeline, portal strategies, role discovery & the job
+prioritizer, the minimal Chrome profile copy, browser preflight, the REST API (validation, auth,
+rate limiting), analytics aggregation, and SMTP notifications.
 
 ---
 

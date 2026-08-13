@@ -1,19 +1,23 @@
-"""Semi-autonomous application agent for Naukri / Indeed (Google Jobs as fallback).
+"""Continuous, single-window application agent for Naukri / Indeed.
 
 Modes:
-- **human** (default): log in, find & score jobs, open the application, pre-fill
-  the form, then leave submission to the user (needed for CAPTCHAs / multi-step
-  ATS). The browser stays open so the user can finish.
-- **auto**: additionally clicks submit automatically.
+- **human** (default): pre-fill forms and let the user submit (needed for
+  CAPTCHAs / multi-step ATS).
+- **auto**: additionally click submit for forms with nothing missing; forms
+  missing profile data are handed off to the user.
 - **off**: does nothing.
 
-Every portal is processed independently; failures, obstacles (CAPTCHAs, login
-walls) and rate limits are caught, logged, and reported instead of crashing.
+Continuous mode runs in batches of ``batch_size`` applications per cycle, pauses
+``cooldown_seconds`` between cycles, and keeps going until a ``stop_event`` is
+set (or the user stops via the dashboard). Every portal is processed in one
+reused tab; each job opens in a new tab which is closed after applying, so the
+browser window stays tidy and existing logins are never re-prompted.
 """
 
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections.abc import Callable
 from typing import Any
@@ -23,10 +27,12 @@ from jobhunter.automation import strategies
 from jobhunter.automation.browser import BrowserSession, is_logged_in
 from jobhunter.automation.evaluator import evaluate_job
 from jobhunter.automation.form_filler import fill_form
+from jobhunter.automation.prioritizer import sort_jobs_by_priority
 from jobhunter.automation.profile import profile_from_resume
+from jobhunter.automation.roles import priority_role_titles
 from jobhunter.automation.strategies import fill_input
 from jobhunter.config import Settings, get_settings
-from jobhunter.storage.history import save_applied_jobs
+from jobhunter.storage.history import load_applied_jobs, save_applied_jobs
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +47,10 @@ class ApplyAgent:
         self._log: list[dict[str, str]] = []
         self._on_status: StatusCallback | None = None
         self._llm: Any = None
+        self._stop_event = threading.Event()
+        self._cycle_budget: int = 5
+        self._cooldown: int = 300
+        self._prioritize_remote: bool = True
 
     # ------------------------------------------------------------------ public
     def run(
@@ -52,32 +62,59 @@ class ApplyAgent:
         max_applications: int | None = None,
         resume_pdf: str | None = None,
         on_status: StatusCallback | None = None,
+        profile: dict | None = None,
+        roles: list[str] | None = None,
+        continuous: bool = False,
+        stop_event: threading.Event | None = None,
+        batch_size: int | None = None,
+        cooldown_seconds: int | None = None,
+        cycle_callback: Callable[[int, list[dict]], None] | None = None,
+        prioritize_remote: bool | None = None,
     ) -> dict[str, Any]:
         """Run the apply agent and return results + a log.
 
         ``mode`` defaults to ``auto_apply_mode`` from settings (``human``).
+        ``roles`` (job titles) drive what is searched; when given, each cycle
+        rotates to the next role. ``stop_event`` lets the dashboard stop a
+        continuous run cleanly.
         """
         mode = mode or self.settings.auto_apply_mode
-        max_applications = max_applications or self.settings.max_applications_per_run
         if mode == "off":
             self._report("info", "config", "Auto-apply is disabled (auto_apply_mode=off)")
             return {"results": [], "log": self._log, "mode": mode}
 
+        max_applications = max_applications or self.settings.max_applications_per_run
         portals = [p for p in (portals or ["naukri", "indeed"]) if p in strategies.PORTALS]
-        profile = profile_from_resume(resume_text)
+        profile = profile or profile_from_resume(resume_text)
         self._on_status = on_status
         self._llm = _default_llm()
+        if stop_event is not None:
+            self._stop_event = stop_event
+        self._cycle_budget = batch_size or max_applications
+        self._cooldown = cooldown_seconds or self.settings.cooldown_seconds
+        if prioritize_remote is not None:
+            self._prioritize_remote = prioritize_remote
+        else:
+            self._prioritize_remote = self.settings.prioritize_remote
 
+        if roles:
+            query = roles[0]
+            self._report("info", "start", f"Priority roles: {', '.join(roles)}")
         if self.settings.fresher_only and not any(
             k in query.lower() for k in ("fresher", "entry level", "junior")
         ):
             query = f"{query} fresher"
             self._report("info", "start", f"Fresher mode on — search query set to '{query}'")
 
-        self._report("info", "start", f"Mode={mode} | Portals={portals} | Max apps={max_applications}")
+        self._report("info", "start", f"Mode={mode} | Portals={portals} | Batch={self._cycle_budget}")
         self._report("info", "profile", f"Profile: {profile['email'] or 'no email'} | skills: {len(profile['skills'])}")
 
+        priority_titles = priority_role_titles(
+            [{"title": r} for r in roles] if roles else None
+        )
+
         results: list[dict] = []
+        applied = load_applied_jobs(resume_text)
         session = BrowserSession(
             self.settings.browser_state_dir,
             self.settings.headless_browser,
@@ -93,25 +130,62 @@ class ApplyAgent:
                 if session.using_default_profile
                 else "Using dedicated browser profile.",
             )
-            for portal in portals:
-                try:
-                    outcomes = self._process_portal(
-                        session, portal, query, resume_text, profile,
-                        mode, max_applications, resume_pdf,
-                    )
-                    results.extend(outcomes)
-                except Exception as exc:
-                    logger.exception("Portal %s failed", portal)
-                    self._report("error", portal, f"Failed: {exc}")
 
-            # Fallback: nothing applied anywhere -> surface Google Jobs search.
-            if not results:
-                self._google_jobs_fallback(query, session)
-                self._report("warning", "fallback", "No applications recorded; opened Google Jobs search for review.")
+            cycle = 0
+            while True:
+                cycle += 1
+                cycle_query = _query_for_cycle(query, roles, cycle, self.settings)
+                self._report("info", "run", f"--- Cycle {cycle}: '{cycle_query}' ---")
+                for portal in portals:
+                    if self._stop_event.is_set():
+                        break
+                    try:
+                        outcomes = self._process_portal(
+                            session, portal, cycle_query, resume_text, profile,
+                            mode, max_applications, applied, priority_titles,
+                            resume_pdf,
+                        )
+                        results.extend(outcomes)
+                    except Exception as exc:
+                        logger.exception("Portal %s failed", portal)
+                        self._report("error", portal, f"Failed: {exc}")
+                if cycle_callback is not None:
+                    try:
+                        cycle_callback(cycle, results)
+                    except Exception:
+                        pass
+
+                if not continuous:
+                    break
+                if self._stop_event.is_set():
+                    break
+                self._report(
+                    "info", "run",
+                    f"Cycle done — pausing {self._cooldown}s (Stop anytime).",
+                )
+                if self._sleep_interruptible(self._cooldown):
+                    break
         finally:
+            try:
+                session.close_all_pages()
+            except Exception:
+                pass
             session.stop()
 
-        return {"results": results, "log": self._log, "mode": mode}
+        return {"results": results, "log": self._log, "mode": mode, "cycles": cycle}
+
+    def _sleep_interruptible(self, seconds: int) -> bool:
+        """Sleep in small chunks, returning True if a stop was requested."""
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            if self._stop_event.is_set():
+                self._report("info", "run", "Stop requested — finishing run.")
+                return True
+            try:
+                time.sleep(1)
+            except KeyboardInterrupt:
+                return True
+        return False
 
     # ------------------------------------------------------------------ portals
     def _process_portal(
@@ -123,13 +197,16 @@ class ApplyAgent:
         profile: dict,
         mode: str,
         max_applications: int,
-        resume_pdf: str | None,
+        applied: set[str],
+        priority_titles: set[str],
+        resume_pdf: str | None = None,
     ) -> list[dict]:
         outcomes: list[dict] = []
-        page = session.new_page()
+        page = session.new_tab()
 
         if not self._ensure_login(page, portal):
             self._report("error", portal, "Login failed or credentials missing — skipping portal")
+            session.close_page(page)
             return outcomes
 
         self._report("info", portal, f"Searching '{query}'")
@@ -137,6 +214,7 @@ class ApplyAgent:
             self._goto(page, strategies.build_search_url(portal, query))
         except Exception as exc:
             self._report("error", portal, f"Could not open search page: {exc}")
+            session.close_page(page)
             return outcomes
         page.wait_for_load_state("domcontentloaded")
         page.wait_for_timeout(3500)
@@ -148,15 +226,24 @@ class ApplyAgent:
                 f"Search blocked by a bot check ({obstacle}). You can complete it in "
                 f"the browser window (the agent will continue after a refresh), or skip this portal.",
             )
+            session.close_page(page)
             return outcomes
 
         jobs = strategies.collect_cards(page, portal, max_results=max(10, max_applications * 2))
+        jobs = sort_jobs_by_priority(jobs, priority_titles, self._prioritize_remote)
         self._report("info", portal, f"{len(jobs)} jobs found")
 
         attempts = 0
         for job in jobs:
             if attempts >= max_applications:
                 break
+            if self._stop_event.is_set():
+                break
+
+            job_id = job.get("id") or ""
+            if job_id in applied or job.get("url") in applied:
+                self._report("info", portal, f"Skipping already-applied {job['title']} @ {job['company']}")
+                continue
 
             if self.settings.fresher_only:
                 required = strategies.job_experience_years(job)
@@ -176,17 +263,21 @@ class ApplyAgent:
                 continue
 
             attempts += 1  # counts every apply attempt, keeping the run bounded
-            outcome = self._apply_to_job(page, portal, job, profile, mode, resume_pdf)
+            outcome = self._apply_to_job(session, portal, job, profile, mode, resume_pdf)
             outcome["evaluation"] = evaluation
             outcomes.append(outcome)
 
             if outcome.get("status") in ("submitted", "handed_off"):
                 self._record_application(resume_text, job, outcome)
+                applied.add(job_id)
+                if job.get("url"):
+                    applied.add(job["url"])
                 if mode == "human" and outcome.get("status") == "handed_off":
                     # Human-in-the-loop: pause so the user can finish the form.
                     self._report("info", portal, "Waiting 20s for you to complete the form in the browser window…")
                     time.sleep(20)
 
+        session.close_page(page)
         return outcomes
 
     @staticmethod
@@ -211,7 +302,7 @@ class ApplyAgent:
 
     def _apply_to_job(
         self,
-        page,
+        session: BrowserSession,
         portal: str,
         job: dict,
         profile: dict,
@@ -220,49 +311,102 @@ class ApplyAgent:
     ) -> dict:
         base = {"job_id": job["id"], "title": job["title"], "company": job["company"], "source": portal}
 
+        job_page = session.new_tab()
         try:
-            self._goto(page, job["url"])
+            self._goto(job_page, job["url"])
         except Exception as exc:
+            session.close_page(job_page)
             return {**base, "status": "failed", "detail": f"Could not open job page: {exc}"}
-        page.wait_for_timeout(2500)
+        job_page.wait_for_timeout(2500)
 
-        obstacle = strategies.detect_obstacle(page.url, page.inner_text("body")[:4000])
+        obstacle = strategies.detect_obstacle(job_page.url, job_page.inner_text("body")[:4000])
         if obstacle:
+            session.close_page(job_page)
             return {**base, "status": "blocked", "detail": f"Obstacle: {obstacle}"}
 
-        clicked = strategies.click_apply(page)
+        clicked, form_page = self._click_apply_capture_popup(session, job_page)
         if not clicked:
+            session.close_page(job_page)
             return {**base, "status": "no_apply_button", "detail": "No apply button found (maybe already applied or external ATS)."}
 
-        page.wait_for_timeout(3000)
-        page.wait_for_function(
-            """() => {
-                const inputs = document.querySelectorAll('input, textarea, select');
-                for (const el of inputs) {
-                    if (el.offsetParent !== null) return true;
-                }
-                return false;
-            }""",
-            timeout=15000,
-        )
-        stats = fill_form(page, profile, resume_pdf)
+        try:
+            form_page.wait_for_timeout(3000)
+            form_page.wait_for_function(
+                """() => {
+                    const inputs = document.querySelectorAll('input, textarea, select');
+                    for (const el of inputs) {
+                        if (el.offsetParent !== null) return true;
+                    }
+                    return false;
+                }""",
+                timeout=15000,
+            )
+        except Exception:
+            pass  # some forms are JS-spa modals without a stable body first
+
+        stats = fill_form(form_page, profile, resume_pdf)
+        missing = stats.get("missing", [])
 
         if mode == "human":
-            return {
+            detail = f"Form pre-filled ({stats['filled']} fields). Complete & submit in the browser window."
+            if missing:
+                detail += f" Missing: {', '.join(missing)}."
+            result = {
                 **base, "status": "handed_off",
-                "detail": f"Form pre-filled ({stats['filled']} fields). Complete & submit in the browser window.",
+                "detail": detail,
                 "filled_fields": stats,
             }
+        elif missing:
+            result = {
+                **base, "status": "needs_review",
+                "detail": f"Form filled but missing: {', '.join(missing)} — complete in the browser window.",
+                "filled_fields": stats,
+            }
+        else:
+            submitted = (
+                strategies.click_by_text(form_page, "Submit application")
+                or strategies.click_by_text(form_page, "Submit")
+                or strategies.click_by_text(form_page, "Submit now")
+                or strategies.click_by_text(form_page, "Apply")
+            )
+            if submitted:
+                result = {**base, "status": "submitted", "detail": "Application submitted automatically.", "filled_fields": stats}
+            else:
+                result = {**base, "status": "needs_review", "detail": "Form filled; submit button not found — complete manually.", "filled_fields": stats}
 
-        submitted = (
-            strategies.click_by_text(page, "Submit application")
-            or strategies.click_by_text(page, "Submit")
-            or strategies.click_by_text(page, "Submit now")
-            or strategies.click_by_text(page, "Apply")
-        )
-        if submitted:
-            return {**base, "status": "submitted", "detail": "Application submitted automatically.", "filled_fields": stats}
-        return {**base, "status": "needs_review", "detail": "Form filled; submit button not found — complete manually.", "filled_fields": stats}
+        try:
+            session.close_page(form_page)
+        except Exception:
+            pass
+        session.close_page(job_page)
+        return result
+
+    def _click_apply_capture_popup(self, session: BrowserSession, page) -> tuple[bool, Any]:
+        """Click Apply, returning ``(clicked, form_page)``.
+
+        Portals (Naukri/Indeed/LinkedIn) often open the application in a new tab
+        (``target=_blank``). We capture that popup so the form is filled on the
+        real form page rather than the stale job listing.
+        """
+        context = getattr(session, "_context", None)
+        if context is None:
+            clicked = strategies.click_apply(page)
+            return clicked, page
+        try:
+            with context.expect_page(timeout=8000) as popup_info:
+                clicked = strategies.click_apply(page)
+            if clicked:
+                popup = popup_info.value
+                try:
+                    popup.wait_for_load_state("domcontentloaded")
+                except Exception:
+                    pass
+                return True, popup
+            return clicked, page
+        except Exception:
+            # No popup opened (form is a modal in the same page) — or click failed.
+            clicked = strategies.click_apply(page)
+            return clicked, page
 
     # ------------------------------------------------------------------ support
     def _ensure_login(self, page, portal: str) -> bool:
@@ -384,14 +528,6 @@ class ApplyAgent:
         self._report("warning", portal, "Manual login not detected in time — skipping portal")
         return False
 
-    def _google_jobs_fallback(self, query: str, session: BrowserSession) -> None:
-        try:
-            page = session.new_page()
-            page.goto(strategies.build_search_url("google_jobs", query), timeout=45000)
-            page.wait_for_timeout(2000)
-        except Exception as exc:
-            logger.warning("Google Jobs fallback failed: %s", exc)
-
     def _record_application(self, resume_text: str, job: dict, outcome: dict) -> None:
         try:
             save_applied_jobs(resume_text, [outcome["job_id"]], [{
@@ -415,6 +551,23 @@ class ApplyAgent:
                 self._on_status(level, stage, message)
             except Exception:
                 pass
+
+
+def _query_for_cycle(base_query: str, roles: list[str] | None, cycle: int, settings: Settings) -> str:
+    """Pick the query for a continuous cycle.
+
+    Rotates through the user's chosen roles first, then applies fresher/remote
+    variant suffixes across cycles so the search keeps widening coverage.
+    """
+    variants = [v.strip() for v in (settings.query_variants or "").split(",") if v.strip()]
+
+    if roles:
+        role = roles[(cycle - 1) % len(roles)]
+        suffix = variants[(cycle - 1) // len(roles) % len(variants)] if variants else ""
+        return f"{role} {suffix}".strip()
+    if variants:
+        return f"{base_query} {variants[(cycle - 1) % len(variants)]}".strip()
+    return base_query
 
 
 def _click_selector(page, selector: str) -> bool:
@@ -449,15 +602,31 @@ def run_application_pipeline(
     mode: str | None = None,
     max_applications: int | None = None,
     on_status: StatusCallback | None = None,
+    profile: dict | None = None,
+    roles: list[str] | None = None,
+    continuous: bool = False,
+    stop_event: threading.Event | None = None,
+    batch_size: int | None = None,
+    cooldown_seconds: int | None = None,
+    cycle_callback: Callable[[int, list[dict]], None] | None = None,
+    prioritize_remote: bool | None = None,
 ) -> dict[str, Any]:
     """Convenience entry point: build an agent and run the apply pipeline."""
     agent = ApplyAgent()
     return agent.run(
         query=query,
         resume_text=resume_text,
+        resume_pdf=resume_pdf,
         portals=portals,
         mode=mode,
         max_applications=max_applications,
-        resume_pdf=resume_pdf,
         on_status=on_status,
+        profile=profile,
+        roles=roles,
+        continuous=continuous,
+        stop_event=stop_event,
+        batch_size=batch_size,
+        cooldown_seconds=cooldown_seconds,
+        cycle_callback=cycle_callback,
+        prioritize_remote=prioritize_remote,
     )

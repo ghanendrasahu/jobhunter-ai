@@ -202,6 +202,13 @@ def collect_cards(page: Page, portal: str, max_results: int = 10) -> list[dict]:
             if not company or company == "Unknown":
                 company = _fallback_company(card, title, url or "")
 
+            card_text = ""
+            try:
+                card_text = card.inner_text()[:2000]
+            except Exception:
+                pass
+            posted_days = parse_posted_days(card_text)
+
             jobs.append({
                 "id": f"{portal}-{hashlib_md5(url or '')}",
                 "source": portal,
@@ -211,6 +218,8 @@ def collect_cards(page: Page, portal: str, max_results: int = 10) -> list[dict]:
                 "location": (location_el.inner_text().strip() if location_el else "India"),
                 "description": (desc_el.inner_text().strip() if desc_el else ""),
                 "url": url,
+                "posted_days": posted_days,
+                "salary_text": _extract_salary_text(card_text),
             })
         except Exception:
             continue
@@ -222,6 +231,30 @@ def hashlib_md5(value: str) -> str:
     import hashlib
 
     return hashlib.md5(value.encode()).hexdigest()[:10]
+
+
+def parse_posted_days(text: str) -> int | None:
+    """Extract days-since-posted from a job card's text (best-effort)."""
+    from jobhunter.automation.prioritizer import parse_posted_text
+
+    return parse_posted_text(text)
+
+
+_SALARY_PATTERN = re.compile(
+    r"(?:₹|Rs\.?|INR\s*)?\s*"
+    r"(\d[\d,]*\.?\d*)\s*(?:-|–|to)\s*"
+    r"(?:₹|Rs\.?|INR\s*)?\s*(\d[\d,]*\.?\d*)\s*"
+    r"(lpa|lakh|lakhs|LPA|Lakh|thousand|k)?",
+    re.IGNORECASE,
+)
+
+
+def _extract_salary_text(text: str) -> str:
+    """Return the raw salary snippet from a card, or '' when absent."""
+    match = _SALARY_PATTERN.search(text or "")
+    if not match:
+        return ""
+    return match.group(0).strip()
 
 
 def _fallback_company(card, title: str, url: str) -> str:

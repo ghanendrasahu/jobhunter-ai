@@ -91,6 +91,16 @@ class Settings(BaseSettings):
     fresher_only: bool = True
     # Jobs requiring more than this many years of experience are skipped.
     max_experience_years: int = 2
+    # Continuous mode: applications per cycle before the cooldown pause.
+    batch_size: int = 10
+    # Continuous mode: seconds to wait between cycles (avoid rate-limit bans).
+    cooldown_seconds: int = 300
+    # Rank remote/WFH jobs above office jobs of equal quality.
+    prioritize_remote: bool = True
+    # Query suffixes rotated across continuous-mode cycles (comma-separated).
+    query_variants: str = "fresher,entry level,remote"
+    # How many result pages to walk through per query in a cycle.
+    paginate_depth: int = 3
 
     # Runtime paths and limits
     upload_dir: Path = PROJECT_ROOT / "uploads"
@@ -127,6 +137,9 @@ PERSISTED_SETTING_KEYS: tuple[str, ...] = (
     "notification_email",
     "auto_apply_mode",
     "max_applications_per_run",
+    "batch_size",
+    "cooldown_seconds",
+    "prioritize_remote",
 )
 
 
