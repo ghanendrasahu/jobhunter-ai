@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from jobhunter.core.pdf import extract_text_from_pdf
+from jobhunter.domains.resume import extract_text_from_pdf
 
 
 def test_extracts_text(sample_pdf: Path):
@@ -21,5 +21,6 @@ def test_missing_file_raises():
 def test_empty_pdf_is_tolerated(tmp_path: Path):
     empty = tmp_path / "empty.pdf"
     empty.write_bytes(b"%PDF-1.4\n%%EOF")
-    with pytest.raises(Exception):
+    with pytest.raises(Exception) as excinfo:  # noqa: B017 - malformed PDF, any error is acceptable
         extract_text_from_pdf(str(empty))
+    assert excinfo.value is not None

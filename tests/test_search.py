@@ -1,7 +1,7 @@
 """Tests for portal links and the orchestrated job search engine."""
 
-import jobhunter.search.engine as engine
-from jobhunter.search.portals import build_portal_urls
+import jobhunter.domains.search.engine as engine
+from jobhunter.domains.search.portals import build_portal_urls
 
 
 def test_build_portal_urls_returns_links():
@@ -64,7 +64,7 @@ def test_search_all_jobs_deduplicates_urls(monkeypatch):
     assert len(urls) == len(set(urls))  # no duplicate scraped urls
 
 
-async def _fake_jsearch_same_job(_query):
+def _fake_jsearch_same_job(_query):
     # Same company + title as the LinkedIn job, but a different URL.
     return [{"id": "jsearch-1", "title": "Y", "company": "C", "url": "https://other.com/j2", "source": "jsearch"}]
 

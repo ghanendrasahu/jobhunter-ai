@@ -1,16 +1,13 @@
 """Tests for the FastAPI REST endpoints."""
 
 import io
-from pathlib import Path
-from typing import Optional
 
 import pytest
 from fastapi.testclient import TestClient
 
+from conftest import make_pdf
 from jobhunter.api.server import create_app
 from jobhunter.config import Settings
-
-from conftest import make_pdf
 
 PIPELINE_RESULT = {
     "file_path": "/tmp/x.pdf",
@@ -44,7 +41,7 @@ def client() -> TestClient:
     return _app()
 
 
-def _upload(client: TestClient, *, name: str = "resume.pdf", content: Optional[bytes] = None, headers=None):
+def _upload(client: TestClient, *, name: str = "resume.pdf", content: bytes | None = None, headers=None):
     content = content if content is not None else make_pdf("Python Developer resume")
     files = {"file": (name, io.BytesIO(content), "application/pdf")}
     return client.post("/upload_resume", files=files, headers=headers)

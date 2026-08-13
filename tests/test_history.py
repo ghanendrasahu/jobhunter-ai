@@ -2,13 +2,12 @@
 
 from pathlib import Path
 
-import jobhunter.core.history as history
-from jobhunter.core.history import (
+import jobhunter.storage.history as history
+from jobhunter.storage.history import (
     apply_to_job,
     delete_resume,
     export_history_csv,
     get_application_history,
-    list_all_histories,
     list_resumes,
     load_applied_jobs,
     resume_id_from_text,
@@ -63,7 +62,7 @@ def test_save_resume_copies_pdf_and_metadata(monkeypatch, tmp_path: Path):
     pdf_path.write_bytes(b"%PDF-1.4\n%%EOF")
 
     # Patch extraction to avoid needing a valid PDF in this test.
-    from jobhunter.core import pdf as pdf_module
+    from jobhunter.domains import resume as pdf_module
 
     monkeypatch.setattr(pdf_module, "extract_text_from_pdf", lambda p: "Python Developer")
 

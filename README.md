@@ -31,7 +31,9 @@ dashboard**, a **FastAPI REST endpoint**, and a **CLI**.
 ```
                 ┌───────────────────────────┐
                 │   Entry points            │
-                │  run.py │ app.py │ streamlit_app.py
+                │  python -m jobhunter      │  CLI
+                │  jobhunter-web            │  Streamlit dashboard
+                │  uvicorn jobhunter.api:app│  REST API
                 └────────────┬──────────────┘
                              ▼
                 ┌───────────────────────────┐
@@ -42,17 +44,17 @@ dashboard**, a **FastAPI REST endpoint**, and a **CLI**.
         ┌──────────────┼───────────────────────────┐
         ▼              ▼                           ▼
 ┌──────────────┐ ┌──────────────┐        ┌──────────────────┐
-│ core/pdf     │ │ search/*     │        │ core/history     │
-│ core/matcher │ │ portals      │        │ core/analytics   │
-└──────────────┘ │ scrapers     │        │ notifications    │
-                 │ api_sources  │        └──────────────────┘
+│ domains/     │ │ domains/search/*│      │ storage/history  │
+│ resume       │ │ portals      │        │ services/analytics
+│ matching     │ │ scrapers     │        │ services/notifications
+└──────────────┘ │ api_sources  │        └──────────────────┘
                  │ engine       │
                  └──────────────┘
 ```
 
 ### Pipeline steps
 
-1. **extract_resume** — parse the PDF into plain text (`core/pdf.py`)
+1. **extract_resume** — parse the PDF into plain text (`domains/resume.py`)
 2. **generate_query** — ask the LLM for a concise search query; fall back to keyword extraction
 3. **find_jobs** — search scrapers + APIs + portal links, then score each job against the resume
 4. **apply_jobs** — record applications (portal links open in the browser), send a summary email
@@ -66,25 +68,37 @@ the downstream nodes.
 
 ```
 JobHunter AI/
-├── jobhunter/                 # Main package
-│   ├── __init__.py
-│   ├── config.py              # pydantic-settings (env/.env)
-│   ├── agent.py               # LangGraph pipeline + run_job_hunter()
-│   ├── notifications.py       # SMTP email alerts
-│   ├── core/
-│   │   ├── pdf.py             # PDF text extraction
-│   │   ├── matcher.py         # job/resume match scoring
-│   │   ├── history.py         # resume storage + application history + CSV
-│   │   └── analytics.py       # dashboard aggregation
-│   ├── search/
-│   │   ├── portals.py         # portal link generation
-│   │   ├── scrapers.py        # Playwright scrapers (Indeed/LinkedIn/Naukri)
-│   │   ├── api_sources.py     # Adzuna & Jooble APIs
-│   │   └── engine.py          # search orchestration + dedupe
-│   ├── api/
-│   │   └── server.py          # FastAPI app factory
-│   └── ui/
-│       └── dashboard.py       # Streamlit dashboard
+├── src/
+│   └── jobhunter/             # Main package (src layout)
+│       ├── __init__.py
+│       ├── __main__.py        # python -m jobhunter (CLI)
+│       ├── config.py          # pydantic-settings (env/.env)
+│       ├── agent.py           # LangGraph pipeline + run_job_hunter()
+│       ├── cli.py             # CLI entry point
+│       ├── web.py             # Streamlit launcher
+│       ├── scheduler.py       # scheduled/background runner
+│       ├── domains/
+│       │   ├── resume.py      # PDF text extraction
+│       │   ├── matching.py    # job/resume match scoring
+│       │   └── search/
+│       │       ├── portals.py # portal link generation
+│       │       ├── scrapers.py# Playwright scrapers (Indeed/LinkedIn/Naukri)
+│       │       ├── api_sources.py  # Adzuna, Jooble & JSearch APIs
+│       │       └── engine.py  # search orchestration + dedupe
+│       ├── storage/
+│       │   └── history.py     # resume storage + application history + CSV
+│       ├── services/
+│       │   ├── analytics.py   # dashboard aggregation
+│       │   └── notifications.py  # SMTP email alerts
+│       ├── automation/        # semi-autonomous apply agent
+│       │   ├── browser.py, evaluator.py, form_filler.py,
+│       │   ├── profile.py, strategies.py, apply_agent.py, apply.py
+│       ├── api/
+│       │   └── server.py      # FastAPI app factory
+│       └── ui/
+│           ├── dashboard.py   # Streamlit app shell + sidebar
+│           ├── components.py  # shared rendering (CSS, job cards, results)
+│           └── views.py       # page views (search, auto-apply, analytics, …)
 ├── tests/                     # pytest suite
 │   ├── conftest.py            # fixtures + minimal PDF generator
 │   ├── test_pdf.py
@@ -92,16 +106,15 @@ JobHunter AI/
 │   ├── test_history.py
 │   ├── test_search.py
 │   ├── test_agent.py
-│   └── test_api.py
-├── app.py                     # FastAPI entry point (uvicorn app:app)
-├── streamlit_app.py           # Streamlit entry point
-├── main.py                    # Streamlit launcher alias (python main.py)
-├── run.py                     # CLI entry point
-├── requirements.txt           # All deps (core + extras + test tooling)
+│   ├── test_api.py
+│   ├── test_scheduler.py
+│   └── test_automation.py
+├── pyproject.toml             # deps, console scripts, pytest/ruff/mypy config
+├── requirements.txt           # flat dependency pins
 ├── setup.bat                  # Windows one-click setup
 ├── docker-compose.yml         # Containerized Streamlit service
-├── pytest.ini
 ├── Dockerfile
+├── .github/workflows/ci.yml   # lint + type-check + tests
 ├── .env.example
 └── .gitignore
 ```
@@ -123,7 +136,9 @@ JobHunter AI/
 **Manual:**
 
 ```bash
+# Install runtime deps, then install the package (provides the console scripts)
 pip install -r requirements.txt
+pip install -e .
 
 # Optional: Playwright browser for scraping
 python -m playwright install chromium
@@ -136,22 +151,23 @@ cp .env.example .env
 ### Run the CLI
 
 ```bash
-python run.py                         # interactive prompt
-python run.py /path/to/resume.pdf     # run a specific PDF
+python -m jobhunter                         # interactive prompt
+python -m jobhunter /path/to/resume.pdf     # run a specific PDF
+python -m jobhunter --schedule --query "Python Developer" --interval 360  # scheduled loop
 ```
 
 ### Run the Streamlit dashboard
 
 ```bash
-streamlit run streamlit_app.py
+jobhunter-web
 # or
-python main.py
+python -m jobhunter.web
 ```
 
 ### Run the FastAPI server
 
 ```bash
-uvicorn app:app --reload --port 8000
+uvicorn jobhunter.api:app --reload --port 8000
 curl http://localhost:8000/health
 curl -X POST http://localhost:8000/upload_resume -F "file=@/path/to/resume.pdf"
 ```
@@ -251,7 +267,7 @@ Liveness probe — returns `{"status": "ok", "version": "3.0.0"}`.
 ## Running tests
 
 ```bash
-pip install -r requirements.txt
+pip install -e ".[dev]"
 python -m pytest
 # with coverage:
 python -m pytest --cov=jobhunter --cov-report=term-missing
@@ -265,10 +281,10 @@ rate limiting).
 
 ## Extending
 
-- **Add a job API:** create a `search_*_jobs` function in `search/api_sources.py` and call it from `search/engine.py`
-- **Add a scraper:** follow the existing Playwright patterns in `search/scrapers.py` and register it in `search/engine.py`
+- **Add a job API:** create a `search_*_jobs` function in `domains/search/api_sources.py` and call it from `domains/search/engine.py`
+- **Add a scraper:** follow the existing Playwright patterns in `domains/search/scrapers.py` and register it in `domains/search/engine.py`
 - **Use a different LLM:** swap the `ChatOpenAI` in `agent.py` for any LangChain chat model
-- **Real ATS submission:** replace `apply_to_job` in `core/history.py` with an HTTP/Playwright submitter
+- **Real ATS submission:** replace `apply_to_job` in `storage/history.py` with an HTTP/Playwright submitter
 
 ---
 

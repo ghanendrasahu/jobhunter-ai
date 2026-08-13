@@ -1,6 +1,6 @@
 """Tests for the LangGraph agent nodes and pipeline integration."""
 
-from typing import Any, Dict
+from typing import Any
 
 import jobhunter.agent as agent
 from jobhunter.agent import create_agent, extract_resume, run_job_hunter
@@ -20,8 +20,8 @@ class FakeLLM:
         return type("Response", (), {"content": self.content})()
 
 
-def _state(**overrides) -> Dict[str, Any]:
-    base: Dict[str, Any] = {
+def _state(**overrides) -> dict[str, Any]:
+    base: dict[str, Any] = {
         "file_path": "",
         "resume_text": "",
         "search_query": "",
@@ -66,8 +66,7 @@ def test_default_llm_falls_back_to_openai(monkeypatch):
 
 def test_generate_query_uses_llm(sample_resume_text):
     llm = FakeLLM(content="Data Analyst")
-    compiled = create_agent(llm=llm)
-    result = run_job_hunter("unused.pdf", agent=compiled)  # extraction will fail first
+    create_agent(llm=llm)  # building the graph must not raise
 
     # Drive the node directly instead of the full graph:
     from jobhunter.agent import _make_generate_query

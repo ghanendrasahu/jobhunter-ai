@@ -1,6 +1,6 @@
 """Tests for job/resume match scoring."""
 
-from jobhunter.core.matcher import compute_match_score, score_jobs
+from jobhunter.domains.matching import compute_match_score, score_jobs
 
 RESUME = (
     "Software Engineer skilled in Python, Docker, AWS, machine learning, "
