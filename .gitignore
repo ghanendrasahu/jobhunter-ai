@@ -14,11 +14,6 @@ venv/
 .coverage
 htmlcov/
 
-# Runtime data
-uploads/
-history/
-resumes/
-
 # IDE
 .vscode/
 .idea/
@@ -26,3 +21,8 @@ resumes/
 # OS
 .DS_Store
 Thumbs.db
+
+# Runtime data
+history/
+resumes/
+uploads/

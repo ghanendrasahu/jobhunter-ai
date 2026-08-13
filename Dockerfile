@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies first for better layer caching
-COPY requirements.txt .
+COPY requirements*.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Install Playwright and its Chromium browser

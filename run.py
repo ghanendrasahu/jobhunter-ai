@@ -1,6 +1,8 @@
-"""CLI entry point that prompts for a PDF resume path and runs the pipeline.
+"""CLI entry point for the JobHunter pipeline.
 
-Usage: ``python run.py``
+Usage:
+    python run.py                      # interactive prompt
+    python run.py /path/to/resume.pdf  # run a specific PDF
 """
 
 from __future__ import annotations
@@ -10,6 +12,18 @@ import sys
 from pathlib import Path
 
 from jobhunter.agent import run_job_hunter
+
+
+def _resolve_pdf(raw: str) -> str:
+    """Validate a PDF path, exiting with a message on failure."""
+    pdf_path = Path(raw)
+    if not pdf_path.exists():
+        print(f"  ✗ File not found: {raw}")
+        sys.exit(1)
+    if pdf_path.suffix.lower() != ".pdf":
+        print(f"  ✗ Not a PDF file: {raw}")
+        sys.exit(1)
+    return str(pdf_path)
 
 
 def _prompt_for_pdf() -> str:
@@ -23,19 +37,13 @@ def _prompt_for_pdf() -> str:
         if raw.lower() in ("q", "quit", "exit"):
             print("Goodbye.")
             sys.exit(0)
-
-        pdf_path = Path(raw)
-        if not pdf_path.exists():
-            print(f"  ✗ File not found: {raw}")
+        if not raw:
             continue
-        if pdf_path.suffix.lower() != ".pdf":
-            print(f"  ✗ Not a PDF file: {raw}")
-            continue
-        return str(pdf_path)
+        return _resolve_pdf(raw)
 
 
 def main() -> None:
-    pdf_path = _prompt_for_pdf()
+    pdf_path = sys.argv[1] if len(sys.argv) > 1 else _prompt_for_pdf()
 
     print(f"\n  ✓ Processing: {Path(pdf_path).name}")
     print("  Running pipeline (extract → query → search → apply)...\n")

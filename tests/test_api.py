@@ -30,11 +30,16 @@ def _app(api_key: str = "", rate_limit: str = "50/minute") -> TestClient:
     return TestClient(create_app(settings))
 
 
-@pytest.fixture
-def client(monkeypatch):
+@pytest.fixture(autouse=True)
+def _patch_pipeline(monkeypatch):
+    """Never run the real pipeline (scraping/LLM) from API tests."""
     from jobhunter.api import server
 
     monkeypatch.setattr(server, "run_job_hunter", lambda path: PIPELINE_RESULT)
+
+
+@pytest.fixture
+def client() -> TestClient:
     return _app()
 
 

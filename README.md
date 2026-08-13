@@ -94,9 +94,13 @@ JobHunter AI/
 │   └── test_api.py
 ├── app.py                     # FastAPI entry point (uvicorn app:app)
 ├── streamlit_app.py           # Streamlit entry point
+├── main.py                    # Streamlit launcher alias (python main.py)
 ├── run.py                     # CLI entry point
-├── requirements.txt
-├── requirements-dev.txt
+├── requirements.txt           # Full install (core + extras)
+├── requirements-core.txt      # Core-only deps (CLI + pipeline)
+├── requirements-dev.txt       # + test tooling (pytest)
+├── setup.bat                  # Windows one-click setup
+├── docker-compose.yml         # Containerized Streamlit service
 ├── pytest.ini
 ├── Dockerfile
 ├── .env.example
@@ -115,8 +119,12 @@ JobHunter AI/
 
 ### Setup
 
+**Windows:** double-click `setup.bat` (installs deps, Playwright, and creates `.env`).
+
+**Manual:**
+
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.txt        # or requirements-core.txt for CLI/pipeline only
 
 # Optional: Playwright browser for scraping
 python -m playwright install chromium
@@ -129,14 +137,16 @@ cp .env.example .env
 ### Run the CLI
 
 ```bash
-python run.py
-# Enter the path to a PDF resume
+python run.py                         # interactive prompt
+python run.py /path/to/resume.pdf     # run a specific PDF
 ```
 
 ### Run the Streamlit dashboard
 
 ```bash
 streamlit run streamlit_app.py
+# or
+python main.py
 ```
 
 ### Run the FastAPI server
@@ -152,6 +162,9 @@ curl -X POST http://localhost:8000/upload_resume -F "file=@/path/to/resume.pdf"
 ```bash
 docker build -t jobhunter-ai .
 docker run -p 8501:8501 jobhunter-ai
+
+# or use docker compose (mounts history/ and resumes/ as volumes)
+docker compose up --build
 ```
 
 ---

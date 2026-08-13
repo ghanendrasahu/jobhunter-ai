@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
+import logging
 from functools import lru_cache
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+logger = logging.getLogger(__name__)
+
+_ENV_PATH = PROJECT_ROOT / ".env"
+if not _ENV_PATH.exists():
+    logger.info(
+        "No .env file found. Copy .env.example to .env and fill in your "
+        "API keys for full functionality."
+    )
 
 
 class Settings(BaseSettings):
