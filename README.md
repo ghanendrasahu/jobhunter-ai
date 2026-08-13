@@ -185,13 +185,13 @@ Or use the **🤖 Auto Apply** page in the Streamlit dashboard. The agent:
 4. In **human** mode you finish + submit (needed for CAPTCHAs / multi-step ATS forms); in **auto** mode it submits for you.
 5. Records every application to your history (visible on the Dashboard).
 
-> **No portal passwords or extra logins needed.** The agent copies a *minimal slice*
-> of your default Chrome profile (a few MB: `Local State`, `Preferences`, cookie
-> store) and launches Chrome against that copy, so **all your existing portal logins
-> are reused automatically** — Chrome itself decrypts its own cookies, bypassing
-> modern Chrome's App-Bound Encryption and its block on automating the real profile.
-> The copy refreshes automatically when your real Chrome profile changes.
-> Disable with `BROWSER_USE_DEFAULT_PROFILE=false` to use the dedicated profile instead.
+> **Two ways to use your account (both give you real confirmation emails):**
+> 1. **`.env` credentials** — set `NAUKRI_EMAIL/NAUKRI_PASSWORD` (and/or
+>    `INDEED_EMAIL/INDEED_PASSWORD`). The agent logs in through the portal's own
+>    form (no Google sign-in, so Google never blocks it), applies from your
+>    account, and confirmation emails land in the email on that account.
+> 2. **Default-Chrome sessions** — the agent copies a minimal slice of your Chrome
+>    profile and reuses all existing logins automatically.
 >
 > Install the browser engine once: `python -m playwright install chromium`
 > Portals block automation aggressively. Start in `human` mode and keep volume low to avoid account bans; a company confirmation email only arrives after a *real* submission.

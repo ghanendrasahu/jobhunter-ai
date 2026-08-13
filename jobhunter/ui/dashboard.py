@@ -409,11 +409,10 @@ def auto_apply_page() -> None:
             st.caption("No portal passwords needed: leave `.env` credentials empty and log in once in the opened browser window (session persists).")
 
     with col_right:
-        st.markdown("#### How login works")
-        st.markdown("No passwords or extra logins needed.")
-        st.markdown("1. The agent copies a few MB of your **default Chrome profile** (cookies + config)")
-        st.markdown("2. It launches Chrome against that copy — **all existing portal logins reused**")
-        st.markdown("3. The copy auto-refreshes when your Chrome profile changes")
+        st.markdown("#### Apply from your account → confirmation emails")
+        st.markdown("Two ways (either gives you real confirmation emails):")
+        st.markdown("1. **`.env` credentials** — `NAUKRI_EMAIL/NAUKRI_PASSWORD`, `INDEED_EMAIL/INDEED_PASSWORD`. Auto-login via the portal's own form (no Google block). Emails go to that account's email.")
+        st.markdown("2. **Default-Chrome sessions** — your existing logins are reused automatically (copied profile).")
 
     if resume_text and st.button("🚀 Run Apply Agent", type="primary", use_container_width=True):
         with st.status("Running apply agent…", expanded=True) as status:

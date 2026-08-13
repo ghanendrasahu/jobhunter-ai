@@ -272,7 +272,7 @@ class ApplyAgent:
             self._report("info", portal, f"No {portal} credentials in .env — logging in manually for you")
             return self._wait_manual_login(page, portal)
 
-        self._report("info", portal, "Logging in…")
+        self._report("info", portal, "Logging in with .env credentials…")
         try:
             if selectors["email"] and not fill_input(page, selectors["email"], email):
                 strategies.click_by_text(page, "Continue")
@@ -291,10 +291,29 @@ class ApplyAgent:
 
         obstacle = strategies.detect_obstacle(page.url, page.inner_text("body")[:4000])
         if obstacle:
-            self._report("warning", portal, f"Login blocked by verification ({obstacle}). Complete it in the browser window, then re-run.")
-            return True  # user can finish; persist session for next run
+            self._report(
+                "warning", portal,
+                f"Login blocked by verification ({obstacle}). Complete it in the browser window, "
+                f"or log in on your normal Chrome and re-run.",
+            )
+            return True  # user can finish; session persists for next run
 
-        return True
+        # Verify the login actually succeeded before proceeding.
+        home_url = strategies.PORTALS[portal].get("home_url", "")
+        logged_in = False
+        if home_url:
+            try:
+                page.goto(home_url, timeout=45000)
+                page.wait_for_load_state("domcontentloaded")
+                logged_in = _safe_logged_in(page, selectors["logged_in"])
+            except Exception as exc:
+                logger.warning("Login verification failed for %s: %s", portal, exc)
+        if logged_in:
+            self._report("info", portal, "Login successful")
+            return True
+
+        self._report("warning", portal, "Auto-login did not complete — finishing login manually")
+        return self._wait_manual_login(page, portal)
 
     def _wait_manual_login(self, page, portal: str) -> bool:
         """Poll until the user completes login in the browser window."""
