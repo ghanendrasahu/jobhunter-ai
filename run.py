@@ -43,6 +43,13 @@ def _prompt_for_pdf() -> str:
 
 
 def main() -> None:
+    # Ensure Unicode output works regardless of the console code page (e.g. Windows cp1252).
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
     pdf_path = sys.argv[1] if len(sys.argv) > 1 else _prompt_for_pdf()
 
     print(f"\n  ✓ Processing: {Path(pdf_path).name}")
