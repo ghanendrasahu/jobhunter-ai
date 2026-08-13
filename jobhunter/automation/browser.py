@@ -34,6 +34,20 @@ _CACHE_DIRS = {
     "IndexedDB", "DawnCache", "DawnShaderCache",
 }
 
+# Hide Playwright automation fingerprints so portals (and Google sign-in)
+# treat the browser as a normal Chrome instance.
+_STEALTH_ARGS = [
+    "--disable-blink-features=AutomationControlled",
+    "--disable-infobars",
+    "--start-maximized",
+]
+
+_STEALTH_SCRIPT = """
+Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+"""
+
 
 class BrowserSession:
     """Thin wrapper around a Playwright persistent browser context."""
@@ -81,8 +95,16 @@ class BrowserSession:
 
         if self.using_default_profile:
             logger.info("Using the user's default Chrome account sessions (copied profile)")
+        self._apply_stealth()
         logger.info("Browser session started (channel=%s, headless=%s)", self.channel, self.headless)
         return self._context
+
+    def _apply_stealth(self) -> None:
+        """Mask automation signals that trigger bot checks / Google sign-in blocks."""
+        try:
+            self._context.add_init_script(_STEALTH_SCRIPT)
+        except Exception as exc:
+            logger.warning("Could not apply stealth script: %s", exc)
 
     # ------------------------------------------------------------- default profile
     def _ensure_default_profile_copy(self) -> Optional[Path]:
@@ -131,7 +153,7 @@ class BrowserSession:
         kwargs: dict = {
             "user_data_dir": str(user_data_dir),
             "headless": self.headless,
-            "args": ["--start-maximized"],
+            "args": _STEALTH_ARGS,
             "no_viewport": True,
         }
         if channel:
