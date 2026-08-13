@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -56,6 +57,23 @@ class Settings(BaseSettings):
     # Optional API auth (FastAPI)
     jobhunter_api_key: str = ""
     api_rate_limit: str = "20/minute"
+
+    # ------------------------------------------------------------------
+    # Application automation (semi-autonomous apply agent)
+    # ------------------------------------------------------------------
+    # Portal login credentials (stored in .env, never committed)
+    naukri_email: str = ""
+    naukri_password: str = ""
+    indeed_email: str = ""
+    indeed_password: str = ""
+
+    # Automation behaviour
+    auto_apply_mode: Literal["human", "auto", "off"] = "human"
+    max_applications_per_run: int = 5
+    headless_browser: bool = False
+    browser_state_dir: Path = PROJECT_ROOT / "data" / "browser_state"
+    # Extra details injected into application forms (e.g. expected salary, notice period)
+    application_notes: str = ""
 
     # Runtime paths and limits
     upload_dir: Path = PROJECT_ROOT / "uploads"

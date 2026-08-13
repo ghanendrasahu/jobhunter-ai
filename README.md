@@ -22,6 +22,7 @@ dashboard**, a **FastAPI REST endpoint**, and a **CLI**.
 - 📊 **Analytics dashboard** (Streamlit + Plotly)
 - 🔐 **Optional REST API** with API-key auth and rate limiting
 - 📧 **Email notifications** after each pipeline run (optional)
+- 🤖 **Semi-autonomous apply agent** — logs into Naukri/Indeed, scores jobs with Groq, and auto-fills application forms (human-in-the-loop or full-auto)
 
 ---
 
@@ -167,6 +168,26 @@ docker run -p 8501:8501 jobhunter-ai
 docker compose up --build
 ```
 
+### Run the Auto-Apply agent
+
+```bash
+# CLI (human mode = pre-fill, you click submit)
+python -m jobhunter.automation.apply --query "Python Developer" --resume resume.pdf
+
+# Full-auto mode (agent clicks submit)
+python -m jobhunter.automation.apply -q "Data Analyst" -r resume.pdf --mode auto --portals naukri indeed --max 3
+```
+
+Or use the **🤖 Auto Apply** page in the Streamlit dashboard. The agent:
+1. Reuses a persistent logged-in browser session (`data/browser_state/`), so you log into Naukri/Indeed once.
+2. Searches each portal, then has Groq score every job against your resume (keyword fallback offline).
+3. Opens the apply form and pre-fills it from your resume profile.
+4. In **human** mode you finish + submit (needed for CAPTCHAs / multi-step ATS forms); in **auto** mode it submits for you.
+5. Records every application to your history (visible on the Dashboard).
+
+> Install the browser engine once: `python -m playwright install chromium`
+> Portals block automation aggressively. Start in `human` mode and keep volume low to avoid account bans; a company confirmation email only arrives after a *real* submission.
+
 ---
 
 ## Configuration
@@ -187,6 +208,11 @@ docker compose up --build
 | `JOBHUNTER_API_KEY`      | No       | If set, REST clients must send `X-API-Key` header|
 | `API_RATE_LIMIT`         | No       | FastAPI rate limit (default `20/minute`)         |
 | `MAX_FILE_SIZE_MB`       | No       | Max PDF upload size (default `10`)               |
+| `NAUKRI_EMAIL` / `NAUKRI_PASSWORD` | No | Naukri login for the apply agent          |
+| `INDEED_EMAIL` / `INDEED_PASSWORD` | No | Indeed login for the apply agent          |
+| `AUTO_APPLY_MODE`        | No       | `human` (pre-fill, user submits), `auto`, `off` (default `human`) |
+| `MAX_APPLICATIONS_PER_RUN` | No     | Cap per run (default `5`)                        |
+| `HEADLESS_BROWSER`       | No       | Run the browser hidden (default `false`)         |
 
 \* *The pipeline works fully without an OpenAI key — query generation falls back to keyword extraction.*
 

@@ -13,6 +13,8 @@ import plotly.express as px
 import streamlit as st
 
 from jobhunter.agent import run_job_hunter
+from jobhunter.automation import run_application_pipeline
+from jobhunter.config import get_settings
 from jobhunter.core.analytics import get_analytics_data
 from jobhunter.core.history import (
     delete_resume,
@@ -22,6 +24,7 @@ from jobhunter.core.history import (
     resume_id_from_text,
     save_resume,
 )
+from jobhunter.core.pdf import extract_text_from_pdf
 from jobhunter.search.portals import build_portal_urls
 
 MAX_UPLOAD_MB = 10
@@ -259,7 +262,7 @@ def render_sidebar() -> str:
         st.markdown("---")
         page = st.radio(
             "Navigate",
-            ["🎯 Job Search", "📊 Dashboard", "📝 Resumes", "⚙️ Settings"],
+            ["🎯 Job Search", "🤖 Auto Apply", "📊 Dashboard", "📝 Resumes", "⚙️ Settings"],
             label_visibility="collapsed",
         )
 
@@ -361,6 +364,111 @@ def job_search_page() -> None:
         st.markdown("---")
         st.markdown("## 📊 Results")
         render_results(result)
+
+
+def auto_apply_page() -> None:
+    """Semi-autonomous application agent (Naukri / Indeed / Google Jobs)."""
+    settings = get_settings()
+    st.markdown("## 🤖 Auto Apply Agent")
+    st.markdown(
+        "The agent logs into your portals, finds jobs, scores them against your resume "
+        "with AI, and fills application forms. **Human mode** pre-fills and lets you "
+        "click submit (handles CAPTCHAs); **auto mode** submits automatically."
+    )
+
+    col_left, col_right = st.columns([2, 1])
+    with col_left:
+        query = st.text_input("🔍 Search query", value="Python Developer")
+        saved = list_resumes()
+        resume_source = st.radio("Resume source", ["Upload new PDF", "Use saved resume"], horizontal=True)
+
+        resume_text = ""
+        resume_pdf = None
+        if resume_source == "Upload new PDF":
+            uploaded = st.file_uploader("Choose a PDF resume", type=["pdf"])
+            if uploaded:
+                if uploaded.size > MAX_UPLOAD_MB * 1024 * 1024:
+                    st.error(f"Max {MAX_UPLOAD_MB} MB")
+                else:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                        tmp.write(uploaded.getvalue())
+                        resume_pdf = tmp.name
+                    resume_text = extract_text_from_pdf(resume_pdf)
+                    st.success(f"✅ {uploaded.name} parsed ({len(resume_text)} chars)")
+        elif saved:
+            names = {f"{r['name']} ({r['id'][:8]})": r for r in saved}
+            selected = st.selectbox("Select saved resume", list(names.keys()))
+            resume_pdf = names[selected]["file_path"]
+            resume_text = extract_text_from_pdf(resume_pdf)
+
+        with st.expander("⚙️ Agent settings"):
+            mode = st.selectbox("Apply mode", ["human", "auto", "off"],
+                                index=["human", "auto", "off"].index(settings.auto_apply_mode))
+            portals = st.multiselect("Portals", ["naukri", "indeed"], default=["naukri", "indeed"])
+            max_apps = st.slider("Max applications per run", 1, 10, settings.max_applications_per_run)
+            st.caption("Portals need credentials in `.env` (NAUKRI_EMAIL/NAUKRI_PASSWORD, INDEED_EMAIL/INDEED_PASSWORD).")
+
+    with col_right:
+        st.markdown("#### Portal credentials")
+        st.code(
+            "NAUKRI_EMAIL=you@email.com\nNAUKRI_PASSWORD=...\nINDEED_EMAIL=you@email.com\nINDEED_PASSWORD=..."
+        )
+        st.markdown("#### What happens")
+        st.markdown("1. Opens a persistent browser (logged-in session reused)")
+        st.markdown("2. Searches each portal for your query")
+        st.markdown("3. Groq scores every job → apply/skip decision")
+        st.markdown("4. Opens apply form & pre-fills from your resume")
+        st.markdown("5. Records applications to your history")
+
+    if resume_text and st.button("🚀 Run Apply Agent", type="primary", use_container_width=True):
+        with st.status("Running apply agent…", expanded=True) as status:
+            status_log: Dict[str, str] = {}
+
+            def on_status(level: str, stage: str, message: str) -> None:
+                status_log[f"{stage}"] = message
+                icon = {"error": "❌", "warning": "⚠️", "info": "ℹ️"}.get(level, "ℹ️")
+                st.write(f"{icon} **{stage.title()}:** {message}")
+
+            result = run_application_pipeline(
+                query=query,
+                resume_text=resume_text,
+                resume_pdf=resume_pdf,
+                portals=portals or None,
+                mode=mode,
+                max_applications=max_apps,
+                on_status=on_status,
+            )
+            status.update(label="Apply agent finished", state="complete")
+
+        results = result.get("results", [])
+        st.markdown("## 📋 Outcome")
+        if results:
+            df = pd.DataFrame([
+                {
+                    "Title": r.get("title"),
+                    "Company": r.get("company"),
+                    "Source": r.get("source"),
+                    "Status": r.get("status"),
+                    "Score": r.get("evaluation", {}).get("score"),
+                }
+                for r in results
+            ])
+            st.dataframe(df, use_container_width=True)
+            for r in results:
+                st.markdown(f"- **{r.get('title')}** @ {r.get('company')} → `{r.get('status')}` — {r.get('detail')}")
+        else:
+            st.warning("No applications attempted. Check the log above (likely missing credentials or blocked).")
+
+        with st.expander("🔎 Agent log"):
+            for entry in result.get("log", []):
+                icon = {"error": "❌", "warning": "⚠️", "info": "ℹ️"}.get(entry["level"], "ℹ️")
+                st.write(f"{icon} `{entry['stage']}` — {entry['message']}")
+
+        if resume_source == "Upload new PDF" and resume_pdf:
+            try:
+                os.unlink(resume_pdf)
+            except OSError:
+                pass
 
 
 def dashboard_page() -> None:
@@ -508,6 +616,8 @@ def main() -> None:
 
     if page == "🎯 Job Search":
         job_search_page()
+    elif page == "🤖 Auto Apply":
+        auto_apply_page()
     elif page == "📊 Dashboard":
         dashboard_page()
     elif page == "📝 Resumes":
