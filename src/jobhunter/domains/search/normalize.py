@@ -61,8 +61,9 @@ def normalize_title(title: str) -> str:
     lowered = text.lower()
     for token in _TITLE_NOISE:
         pattern = re.compile(r"\s*[|:,()\[\]\-]?\s*" + re.escape(token) + r"\s*$")
-        if pattern.search(lowered):
-            text = text[: pattern.search(lowered).start()].rstrip(" |:,()-[]")
+        match = pattern.search(lowered)
+        if match:
+            text = text[: match.start()].rstrip(" |:,()-[]")
             text = _collapse(text)
             lowered = text.lower()
     return text[:120]
