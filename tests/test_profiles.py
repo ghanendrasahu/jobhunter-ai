@@ -26,3 +26,14 @@ def test_selected_roles_roundtrip():
 def test_suggested_roles_roundtrip():
     profiles.save_suggested_roles([{"title": "Data Scientist", "tier": 1, "score": 0.9}])
     assert profiles.load_suggested_roles() == [{"title": "Data Scientist", "tier": 1, "score": 0.9}]
+
+
+def test_candidate_knowledge_roundtrip():
+    profiles.save_candidate_knowledge({"full_name": "Test", "skills": ["python"], "experience_years": 3})
+    assert profiles.load_candidate_knowledge()["full_name"] == "Test"
+    assert profiles.load_candidate_knowledge()["experience_years"] == 3
+
+
+def test_candidate_knowledge_clear():
+    profiles.save_candidate_knowledge({})
+    assert profiles.load_candidate_knowledge() == {}

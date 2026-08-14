@@ -44,6 +44,17 @@ def load_profile() -> dict:
     return _load("profile") or {}
 
 
+def save_candidate_knowledge(knowledge: dict) -> None:
+    """Persist the candidate knowledge base (empty dict clears it)."""
+    _save("candidate_knowledge", knowledge)
+
+
+def load_candidate_knowledge() -> dict:
+    """Return the last built candidate knowledge base, or {}."""
+    value = _load("candidate_knowledge")
+    return value if isinstance(value, dict) else {}
+
+
 def save_selected_roles(roles: list[str]) -> None:
     """Persist the user's chosen search roles (titles)."""
     _save("selected_roles", roles or [])
