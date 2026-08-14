@@ -94,7 +94,7 @@ def test_full_pipeline_happy_path(sample_pdf, monkeypatch):
          "source": "linkedin", "description": "Machine learning required"},
     ]
 
-    monkeypatch.setattr(agent, "search_all_jobs", lambda q: fake_jobs)
+    monkeypatch.setattr(agent, "search_plan_jobs", lambda plan: fake_jobs)
     monkeypatch.setattr(agent, "apply_to_job", lambda job, resume: {
         "job_id": job["id"], "job_title": job["title"], "company": job["company"],
         "status": "applied", "detail": "ok", "match_score": job.get("match_score"),

@@ -106,6 +106,36 @@ def click_by_text(page: Page, text: str, timeout_ms: int = 5000) -> bool:
         return False
 
 
+# Text of the *final* submit action on application forms (in priority order).
+_SUBMIT_TEXTS = ("Submit Application", "Save & Submit", "Submit", "Submit now")
+# Text of step-advance actions on multi-step forms (Naukri's instant apply).
+_STEP_TEXTS = ("Save & Continue", "Continue", "Next", "Save")
+
+
+def click_submit(page: Page, timeout_ms: int = 5000) -> bool:
+    """Click the application form's final submit button (best-effort)."""
+    for selector in ("button[type='submit']", "input[type='submit']"):
+        try:
+            locator = page.locator(selector).first
+            if locator.is_visible():
+                locator.click(timeout=timeout_ms)
+                return True
+        except Exception:
+            continue
+    for text in _SUBMIT_TEXTS:
+        if click_by_text(page, text, timeout_ms):
+            return True
+    return False
+
+
+def click_step_advance(page: Page, timeout_ms: int = 4000) -> bool:
+    """Click a multi-step form's Next/Continue button, if present."""
+    for text in _STEP_TEXTS:
+        if click_by_text(page, text, timeout_ms):
+            return True
+    return False
+
+
 def click_apply(page: Page, timeout_ms: int = 15000) -> bool:
     """Click the first visible apply button/link whose text contains 'Apply'.
 

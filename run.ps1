@@ -1,14 +1,16 @@
-<#============================================================================
+﻿<#============================================================================
   JobHunter AI — Run script
   Author: ghanendrasahu
-  Purpose: One‑script launcher for the most common commands:
-    • Install deps + Playwright browser
-    • Run CLI (interactive or PDF)
-    • Run Streamlit dashboard
-    • Run FastAPI server
-    • Run tests + coverage
-    • Quick lint/mypy check
+  Purpose: One-script launcher for the most common commands:
+    • Run the Streamlit dashboard (default — no prompt)
+    • Show the interactive menu with all options (use: run.ps1 -Menu)
+    • Install deps + Playwright browser, run CLI, run FastAPI,
+      run tests + coverage, lint/mypy check
 ============================================================================#>
+
+param(
+    [switch]$Menu
+)
 
 $VerbosePreference = "SilentlyContinue"
 $ErrorActionPreference = "Stop"
@@ -34,29 +36,53 @@ function Install-Browser {
     Write-Host "✅  Browser installed." -ForegroundColor Green
 }
 
-function Run-CLI {
+function Invoke-CLI {
     Write-Host "`n[3/5] Running CLI ..." -ForegroundColor Cyan
     & python -m jobhunter 2>&1
 }
 
-function Run-Streamlit {
-    Write-Host "`n[4/5] Launching Streamlit dashboard ..." -ForegroundColor Cyan
-    & jobhunter-web 2>&1
+function Invoke-Streamlit {
+    Write-Host "`nLaunching JobHunter AI dashboard → http://localhost:8501 ..." -ForegroundColor Cyan
+    if (Get-Command uv -ErrorAction SilentlyContinue) {
+        & uv run python -m jobhunter.web 2>&1
+    } else {
+        & python -m jobhunter.web 2>&1
+    }
 }
 
-function Run-API {
+function Invoke-API {
     Write-Host "`n[5/5] Starting FastAPI server (http://localhost:8000) ..." -ForegroundColor Cyan
     & uvicorn jobhunter.api:app --reload --port 8000 2>&1
 }
 
-function Run-Tests {
+function Invoke-Tests {
     Write-Host "`nRunning test suite ..." -ForegroundColor Cyan
     & python -m pytest -q 2>&1
-    $passed = ($?)
 
     # coverage gate matches CI (≥40%)
     Write-Host "`n[Coverage] Running with --cov ..." -ForegroundColor Cyan
     & python -m pytest --cov=jobhunter --cov-report=term-missing --cov-fail-under=40 -q 2>&1
+}
+
+function Start-JobHunterBrowser {
+    Write-Host "`nLaunching the dedicated JobHunter Chrome window (automation profile, port 9222)..." -ForegroundColor Cyan
+    $chrome = "$env:ProgramFiles\Google\Chrome\Application\chrome.exe"
+    if (-not (Test-Path $chrome)) { $chrome = "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe" }
+    if (-not (Test-Path $chrome)) { Write-Host "Chrome not found." -ForegroundColor Red; return }
+
+    $profileDir = Join-Path $RepoRoot "data\browser_state\automation_profile"
+    New-Item -ItemType Directory -Force -Path $profileDir | Out-Null
+
+    # Your normal Chrome profile/window is never touched, and nothing is killed.
+    Start-Process $chrome -ArgumentList "--user-data-dir=`"$profileDir`"", "--remote-debugging-port=9222", "--profile-directory=Default", "--no-first-run", "--no-default-browser-check", "--start-maximized"
+    Start-Sleep -Seconds 3
+    try {
+        $json = Invoke-RestMethod "http://localhost:9222/json/version" -TimeoutSec 5
+        Write-Host "✅ JobHunter browser ready: $($json.Browser)" -ForegroundColor Green
+        Write-Host "   Log in to Naukri/Indeed once in this window — sessions persist between runs." -ForegroundColor Yellow
+    } catch {
+        Write-Host "Browser launched, but the debug port is not responding yet. Wait a few seconds, then re-run option 8." -ForegroundColor Yellow
+    }
 }
 
 function Show-Menu {
@@ -72,6 +98,7 @@ function Show-Menu {
     Write-Host "  5) Run FastAPI server (http://localhost:8000)"
     Write-Host "  6) Run tests + coverage gate (≥40%)"
     Write-Host "  7) Quick lint + mypy check"
+    Write-Host "  8) Launch dedicated JobHunter Chrome (persistent auto-apply window)"
     Write-Host "  0) Exit"
     Write-Host ""
     $choice = Read-Host "Select option"
@@ -79,21 +106,27 @@ function Show-Menu {
 }
 
 # ---- Main dispatch ----
-$choice = Show-Menu
+if ($Menu) {
+    $choice = Show-Menu
 
-switch ($choice) {
-    "1" { Install-Deps }
-    "2" { Install-Browser }
-    "3" { Run-CLI }
-    "4" { Run-Streamlit }
-    "5" { Run-API }
-    "6" { Run-Tests }
-    "7" {
-        Write-Host "`n--- ruff check ---" -ForegroundColor Cyan
-        & ruff check src tests 2>&1
-        Write-Host "`n--- mypy check ---" -ForegroundColor Cyan
-        & mypy src 2>&1
+    switch ($choice) {
+        "1" { Install-Deps }
+        "2" { Install-Browser }
+        "3" { Invoke-CLI }
+        "4" { Invoke-Streamlit }
+        "5" { Invoke-API }
+        "6" { Invoke-Tests }
+        "7" {
+            Write-Host "`n--- ruff check ---" -ForegroundColor Cyan
+            & ruff check src tests 2>&1
+            Write-Host "`n--- mypy check ---" -ForegroundColor Cyan
+            & mypy src 2>&1
+        }
+        "8" { Start-JobHunterBrowser }
+        "0" { Write-Host "Good bye!"; exit 0 }
+        default { Write-Host "Invalid choice — try again."; Start-Sleep -Seconds 1 }
     }
-    "0" { Write-Host "Good bye!"; exit 0 }
-    default { Write-Host "Invalid choice — try again."; Start-Sleep -Seconds 1 }
+} else {
+    # Default: launch the project (Streamlit dashboard) directly.
+    Invoke-Streamlit
 }

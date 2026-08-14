@@ -15,10 +15,13 @@ import streamlit as st
 
 from jobhunter.agent import run_job_hunter
 from jobhunter.automation import run_application_pipeline
+from jobhunter.automation.candidate import build_candidate
 from jobhunter.automation.profile import profile_from_resume
 from jobhunter.automation.roles import suggest_roles, tier_display
 from jobhunter.config import get_settings
+from jobhunter.domains.candidate import Candidate
 from jobhunter.domains.resume import extract_text_from_pdf
+from jobhunter.domains.skills import family_display
 from jobhunter.services.analytics import get_analytics_data
 from jobhunter.storage.history import (
     delete_resume,
@@ -28,6 +31,7 @@ from jobhunter.storage.history import (
     save_resume,
 )
 from jobhunter.storage.profiles import (
+    load_candidate_knowledge,
     load_profile,
     load_selected_roles,
     load_suggested_roles,
@@ -135,6 +139,29 @@ def _status_icon(level: str) -> str:
     return {"error": "❌", "warning": "⚠️", "info": "ℹ️"}.get(level, "ℹ️")
 
 
+def _render_candidate_summary(data: dict) -> None:
+    """Show a compact summary of the built candidate knowledge base."""
+    candidate = Candidate.from_dict(data)
+    family = family_display(candidate.role_family) if candidate.role_family else "Unknown"
+    seniority = candidate.seniority.replace("_", " ").title() if candidate.seniority != "UNKNOWN" else "Unknown"
+    years = candidate.experience_years if candidate.experience_years is not None else "Unknown"
+
+    st.markdown(f"**Role family:** {family}")
+    st.markdown(f"**Seniority:** {seniority} · **Experience:** {years} years")
+    if candidate.skills:
+        st.markdown("**Skills:** " + ", ".join(candidate.skills[:15]))
+    if candidate.skill_groups:
+        labels = " | ".join(f"{group}: {len(values)}" for group, values in candidate.skill_groups.items())
+        st.markdown("**Skill groups:** " + labels)
+
+    missing = sorted({
+        "full_name", "email", "phone", "location", "experience_years", "skills",
+        "current_title", "notice_period",
+    } - candidate.known_fields)
+    if missing:
+        st.caption("Not known yet (the agent will ask you later): " + ", ".join(missing))
+
+
 def _run_agent_worker(
     status_queue: queue.Queue,
     stop_event: threading.Event,
@@ -231,9 +258,15 @@ def auto_apply_page() -> None:
 
         if st.button("💾 Save Profile", type="primary"):
             save_profile(updated)
+            build_candidate(resume_text, profile=updated)
             st.session_state["aa_resume_text"] = resume_text
             st.session_state["aa_resume_pdf"] = resume_pdf
+            st.session_state["aa_knowledge"] = load_candidate_knowledge()
             st.success("Profile saved. Continue to Step 2.")
+
+        if st.session_state.get("aa_knowledge"):
+            with st.expander("🧠 Candidate knowledge (auto-derived)"):
+                _render_candidate_summary(st.session_state["aa_knowledge"])
 
     # ------------------------------------------------------------------ step 2
     elif step.startswith("2"):
@@ -306,6 +339,79 @@ def auto_apply_page() -> None:
 
         if roles:
             st.info(f"Searching priority roles: **{', '.join(roles[:8])}**" + ("…" if len(roles) > 8 else ""))
+
+        with st.expander("🖥️ JobHunter Browser"):
+            from jobhunter.automation.browser import (
+                PORTAL_LOGIN_CHECKS,
+                browser_status,
+                check_portal_logins,
+                detect_chrome_user_data_dir,
+                is_chrome_running,
+                launch_dedicated_browser,
+                list_chrome_profiles,
+                open_login_page,
+            )
+
+            status = browser_status(settings)
+            if status["running"]:
+                st.success("Status: JobHunter window is running and connected (CDP reachable).")
+            else:
+                st.info("Status: JobHunter window is not running yet.")
+
+            col_b_l, col_b_r = st.columns([1, 1])
+            with col_b_l:
+                if st.button("🚀 Connect / Launch JobHunter Browser", use_container_width=True):
+                    try:
+                        st.success(launch_dedicated_browser(settings))
+                    except Exception as exc:
+                        st.error(f"Could not start the JobHunter browser: {exc}")
+            with col_b_r:
+                if st.button("Check login status", use_container_width=True):
+                    with st.spinner("Checking Naukri / LinkedIn / Indeed in the JobHunter window…"):
+                        try:
+                            for portal, logged_in in check_portal_logins(settings).items():
+                                mark = "logged in" if logged_in else "not logged in"
+                                st.write(f"- **{portal.capitalize()}:** {mark}")
+                        except Exception as exc:
+                            st.error(f"Login check failed: {exc}")
+
+            st.caption(
+                "First time: log in to each portal once in the opened window. "
+                "Later runs reuse that window automatically."
+            )
+            login_cols = st.columns(len(PORTAL_LOGIN_CHECKS))
+            for col, portal in zip(login_cols, PORTAL_LOGIN_CHECKS, strict=True):
+                with col:
+                    url = PORTAL_LOGIN_CHECKS[portal][0]
+                    if st.button(f"Log in to {portal.capitalize()}", use_container_width=True):
+                        try:
+                            st.success(open_login_page(settings, url))
+                        except Exception as exc:
+                            st.error(f"Could not open {portal}: {exc}")
+
+            with st.expander("ℹ️ Your real Chrome profiles (information only)"):
+                ud = detect_chrome_user_data_dir()
+                if ud is None:
+                    st.write("Chrome profile directory not detected.")
+                else:
+                    st.write(f"User data directory: `{ud}`")
+                    st.write(
+                        "Any Chrome process running now (includes the JobHunter window): "
+                        + ("**yes**" if is_chrome_running() else "no")
+                    )
+                    profiles = list_chrome_profiles(ud)
+                    if profiles:
+                        st.write("Detected profiles:")
+                        for info in profiles:
+                            label = info.friendly_name or info.dir_name
+                            st.write(f"- `{info.dir_name}` → **{label}**")
+                    st.warning(
+                        "Chrome 136+ blocks automated control of your real Chrome profile "
+                        "(security fix), and its cookies are encrypted (App-Bound Encryption), "
+                        "so logins cannot be copied into JobHunter. Your real profiles are never "
+                        "touched or closed — JobHunter uses its own separate window, where you log "
+                        "in once per portal."
+                    )
 
         status_queue_raw = st.session_state.get("aa_queue")
         status_queue: queue.Queue | None = status_queue_raw if isinstance(status_queue_raw, queue.Queue) else None

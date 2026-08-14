@@ -1,21 +1,37 @@
 """Playwright browser management with a persistent, logged-in session.
 
-Modern Chrome blocks CDP automation on the *real* default profile and encrypts
-its cookies (App-Bound Encryption) so third parties can't read them. The reliable
-workaround used here: copy a **minimal slice** of the user's default Chrome
-profile (``Local State`` + ``Preferences`` + the ``Network``/cookie folder —
-only a few MB) into ``browser_state_dir/default_profile``, then launch Chrome
-against that copy. Chrome decrypts its own cookies in the copy, so all existing
-logins (Naukri, Indeed, ...) work with zero extra login.
+How JobHunter drives Chrome:
 
-The copy is refreshed automatically whenever the source profile is newer, so
-new logins in the user's real Chrome are picked up on later runs.
+1. **Dedicated JobHunter window + CDP (the only supported automation path).**
+   A separate, visible Chrome window is launched once on its own
+   ``automation_profile`` directory with a remote-debugging port, then the agent
+   attaches via ``connect_over_cdp`` and reuses the *same* window across runs —
+   so manual portal logins (Naukri, LinkedIn, Indeed) persist. The user's
+   real/default Chrome profile is never touched, copied, or closed.
+
+2. **Why not the user's real profile?** Chrome 136+ refuses to expose a remote
+   debugging port (or pipe) when the user-data-dir is the real Chrome profile —
+   this is a security fix that cannot be disabled. Chrome 127+ also encrypts
+   profile cookies with App-Bound Encryption, so copying the profile no longer
+   carries logins (the cookies are discarded on first launch of the copy).
+   JobHunter therefore uses its own window and asks for a one-time login per
+   portal. ``detect_chrome_user_data_dir`` / ``list_chrome_profiles`` only *read*
+   profile metadata for the UI and never modify anything.
+
+   A legacy ``_launch_copied_profile`` fallback still exists but its sessions do
+   not survive on Chrome 127+.
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import shutil
+import subprocess
+import time
+import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 
 from playwright.sync_api import BrowserContext, Page, Playwright, sync_playwright
@@ -56,6 +72,143 @@ Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
 """
 
 
+@dataclass(frozen=True)
+class ChromeProfileInfo:
+    """A profile discovered inside the user's real Chrome "User Data" dir."""
+
+    dir_name: str
+    friendly_name: str
+    path: Path
+    is_default: bool
+
+
+# Portal login pages + logged-in DOM indicators (presence-only, never values).
+PORTAL_LOGIN_CHECKS: dict[str, tuple[str, list[str]]] = {
+    "naukri": (
+        "https://www.naukri.com/",
+        [".ni-gnb-icn", "[class*='user']"],
+    ),
+    "linkedin": (
+        "https://www.linkedin.com/feed/",
+        [".global-nav__me", "button[aria-label*='profile']"],
+    ),
+    "indeed": (
+        "https://in.indeed.com/",
+        ["[data-testid='account-menu']", ".desktop-header-account"],
+    ),
+}
+
+
+def _profile_number(dir_name: str) -> int:
+    """Sort key for profile dirs: 'Default' first, then 'Profile N' numerically."""
+    if dir_name == "Default":
+        return -1
+    parts = dir_name.split()
+    if len(parts) == 2 and parts[0] == "Profile" and parts[1].isdigit():
+        return int(parts[1])
+    return 10_000
+
+
+def _friendly_name(raw: object, dir_name: str) -> str:
+    """Best display name for a profile from its Local State info_cache entry."""
+    if isinstance(raw, str):
+        return raw or dir_name
+    if isinstance(raw, dict):
+        for key in ("name", "shortcut_name", "user_name", "gaia_name"):
+            value = raw.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+    return dir_name
+
+
+def detect_chrome_user_data_dir() -> Path | None:
+    """Locate the user's real Chrome "User Data" directory, or None.
+
+    Read-only: the directory (and its profiles) is never modified.
+    """
+    home = Path.home()
+    candidates = [
+        home / "AppData" / "Local" / "Google" / "Chrome" / "User Data",
+        home / "Library" / "Application Support" / "Google" / "Chrome",
+        home / ".config" / "google-chrome",
+        home / ".config" / "chromium",
+    ]
+    for candidate in candidates:
+        if (candidate / "Local State").exists():
+            return candidate
+    return None
+
+
+def list_chrome_profiles(user_data_dir: Path | None = None) -> list[ChromeProfileInfo]:
+    """List the user's real Chrome profiles with friendly names from Local State.
+
+    ``friendly_name`` comes from ``Local State`` → ``profile.info_cache`` (the
+    name the user sees in Chrome's profile picker) and falls back to the folder
+    name when it is missing. Only metadata is read — nothing is modified.
+    """
+    ud = Path(user_data_dir) if user_data_dir else detect_chrome_user_data_dir()
+    if ud is None or not ud.is_dir():
+        return []
+
+    info_cache: dict[str, object] = {}
+    try:
+        raw = (ud / "Local State").read_text(encoding="utf-8")
+        info_cache = json.loads(raw).get("profile", {}).get("info_cache", {}) or {}
+    except Exception:
+        info_cache = {}
+
+    profiles: list[ChromeProfileInfo] = []
+    for entry in ud.iterdir():
+        if not entry.is_dir():
+            continue
+        name = entry.name
+        if name == "Default" or (
+            name.startswith("Profile")
+            and len(name.split()) == 2
+            and name.split()[1].isdigit()
+        ):
+            friendly = _friendly_name(info_cache.get(name), name)
+            profiles.append(
+                ChromeProfileInfo(
+                    dir_name=name,
+                    friendly_name=friendly,
+                    path=entry,
+                    is_default=name == "Default",
+                )
+            )
+    profiles.sort(key=lambda p: (not p.is_default, _profile_number(p.dir_name)))
+    return profiles
+
+
+def is_chrome_running() -> bool:
+    """Return True when a Chrome process is currently running on this machine.
+
+    Used only for the UI status line; does not touch or close any Chrome.
+    """
+    if os.name == "nt":
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", "IMAGENAME eq chrome.exe"],
+                capture_output=True, text=True, timeout=5,
+            )
+            return "chrome.exe" in result.stdout
+        except Exception:
+            return False
+    try:
+        result = subprocess.run(
+            ["pgrep", "-x", "chrome"], capture_output=True, text=True, timeout=5,
+        )
+        return bool(result.stdout.strip())
+    except Exception:
+        return False
+
+
+def _logged_in_js(selectors: list[str]) -> str:
+    """Build a presence-only JS expression: true when any selector is present."""
+    parts = [f"!!document.querySelector({json.dumps(s)})" for s in selectors]
+    return "(() => " + " || ".join(parts) + ")()"
+
+
 class BrowserSession:
     """Thin wrapper around a Playwright persistent browser context."""
 
@@ -66,6 +219,10 @@ class BrowserSession:
         channel: str = "chrome",
         use_default_profile: bool = True,
         user_data_dir: str = "",
+        cdp_url: str = "",
+        profile_dir: Path | None = None,
+        debug_port: int = 9222,
+        use_dedicated_profile: bool = True,
     ):
         self.state_dir = Path(state_dir)
         self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -73,14 +230,89 @@ class BrowserSession:
         self.channel = channel or "chrome"
         self.use_default_profile = use_default_profile
         self.user_data_dir = Path(user_data_dir) if user_data_dir else None
+        self.cdp_url = cdp_url
+        self.profile_dir = Path(profile_dir) if profile_dir else None
+        self.debug_port = debug_port
+        self.use_dedicated_profile = use_dedicated_profile
         self.using_default_profile = False
+        self.using_cdp = False
+        self.using_dedicated_profile = False
+        self.reused_existing = False
+        self.launched_new = False
         self._playwright: Playwright | None = None
         self._context: BrowserContext | None = None
+        # Pages created by the agent (so CDP cleanup never touches the user's tabs).
+        self._agent_pages: list[Page] = []
 
     # ------------------------------------------------------------------ lifecycle
     def start(self) -> BrowserContext:
-        """Launch the persistent context, preferring a copy of the user's profile."""
+        """Start the browser, preferring the dedicated automation profile + CDP.
+
+        Priority: explicit ``cdp_url`` override → dedicated automation profile
+        (launch-or-attach via CDP) → copied default-profile launch.
+        """
         self._playwright = sync_playwright().start()
+
+        if self.cdp_url:
+            return self._attach_cdp(self.cdp_url)
+
+        if self.use_dedicated_profile:
+            try:
+                return self.ensure_connected()
+            except Exception as exc:
+                logger.warning(
+                    "Dedicated automation profile unavailable (%s); "
+                    "falling back to copied-profile launch", exc,
+                )
+                self._cleanup_playwright()
+        return self._launch_copied_profile()
+
+    def ensure_connected(self) -> BrowserContext:
+        """Launch (if needed) the dedicated JobHunter Chrome and attach via CDP.
+
+        - Chrome already running on the configured debug port → connect and
+          reuse the same window/profile.
+        - Otherwise launch a new dedicated Chrome process on its own profile
+          directory (never the user's default profile) with remote debugging,
+          then connect.
+
+        The visible window stays open between runs, so manual logins persist.
+        Raises when neither launch nor attach is possible.
+        """
+        assert self._playwright is not None
+        debug_url = f"http://127.0.0.1:{self.debug_port}"
+        if not self._cdp_reachable(debug_url):
+            self.launched_new = True
+            self._launch_dedicated(debug_url)
+        else:
+            self.reused_existing = True
+        self.using_dedicated_profile = True
+        return self._attach_cdp(debug_url)
+
+    def restart(self) -> BrowserContext:
+        """Tear down and re-launch/reattach after a browser crash.
+
+        Preserves the profile and (in CDP mode) the persistent window.
+        """
+        self.stop()
+        self.using_cdp = False
+        self.using_dedicated_profile = False
+        self.reused_existing = False
+        self.launched_new = False
+        return self.start()
+
+    def _cleanup_playwright(self) -> None:
+        if self._playwright is not None:
+            try:
+                self._playwright.stop()
+            except Exception:  # pragma: no cover - best effort
+                pass
+            self._playwright = None
+
+    def _launch_copied_profile(self) -> BrowserContext:
+        """Launch a persistent context from a copy of the user's default profile."""
+        if self._playwright is None:
+            self._playwright = sync_playwright().start()
 
         launch_dir: Path | None = None
         if self.use_default_profile:
@@ -127,6 +359,113 @@ class BrowserSession:
         logger.info("Browser session started (channel=%s, headless=%s)", self.channel, self.headless)
         assert self._context is not None
         return self._context
+
+    def _attach_cdp(self, url: str | None = None) -> BrowserContext:
+        """Attach to an already-running Chrome via CDP (reuses the window/profile).
+
+        No second Chrome window is opened and no profile copy is made: the agent
+        drives the given browser and reuses every existing login directly.
+        """
+        url = (url or self.cdp_url).strip()
+        if not url:
+            raise RuntimeError("No CDP URL configured")
+        assert self._playwright is not None
+        try:
+            browser = self._playwright.chromium.connect_over_cdp(url)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not connect to Chrome at {url}. Start Chrome with:\n"
+                f"    chrome.exe --remote-debugging-port={self.debug_port}\n"
+                f"Original error: {exc}"
+            ) from exc
+        contexts = browser.contexts
+        if not contexts:
+            raise RuntimeError(f"Chrome at {url} exposed no browser context")
+        self._context = next((c for c in contexts if c.pages), contexts[0])
+        self.using_cdp = True
+        self._apply_stealth()
+        logger.info("Attached to Chrome at %s (reusing window + logins)", url)
+        return self._context
+
+    # ------------------------------------------------------------- dedicated profile
+    @staticmethod
+    def _cdp_reachable(url: str, timeout: float = 3.0) -> bool:
+        """Return True when Chrome's CDP endpoint at ``url`` answers /json/version."""
+        try:
+            with urllib.request.urlopen(f"{url}/json/version", timeout=timeout) as resp:
+                return resp.status == 200
+        except Exception:
+            return False
+
+    @staticmethod
+    def _chrome_candidates() -> list[Path]:
+        """Platform-specific locations of the Chrome executable (never the profile)."""
+        home = Path.home()
+        return [
+            Path(os.environ.get("PROGRAMFILES", r"C:\Program Files"))
+            / "Google" / "Chrome" / "Application" / "chrome.exe",
+            Path(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"))
+            / "Google" / "Chrome" / "Application" / "chrome.exe",
+            home / "AppData" / "Local" / "Google" / "Chrome" / "Application" / "chrome.exe",
+            Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+            Path("/usr/bin/google-chrome"),
+            Path("/usr/bin/google-chrome-stable"),
+            Path("/usr/bin/chromium"),
+            Path("/usr/bin/chromium-browser"),
+        ]
+
+    @staticmethod
+    def _chrome_executable() -> str | None:
+        """Return the path of the installed Chrome executable, or None."""
+        for candidate in BrowserSession._chrome_candidates():
+            try:
+                if candidate.exists():
+                    return str(candidate)
+            except OSError:
+                continue
+        return None
+
+    def _resolved_profile_dir(self) -> Path:
+        """The dedicated automation profile directory (never the default profile)."""
+        if self.profile_dir is not None:
+            return Path(self.profile_dir)
+        return self.state_dir / "automation_profile"
+
+    def _launch_dedicated(self, debug_url: str) -> None:
+        """Start the dedicated JobHunter Chrome window on the debug port (headful).
+
+        The profile directory is owned by JobHunter — the user's real/default
+        Chrome profile is never used, and no running Chrome is touched.
+        """
+        chrome = self._chrome_executable()
+        if not chrome:
+            raise RuntimeError(
+                "Chrome executable not found; cannot start the dedicated JobHunter browser."
+            )
+        profile_dir = self._resolved_profile_dir()
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        args = [
+            chrome,
+            f"--user-data-dir={profile_dir}",
+            f"--remote-debugging-port={self.debug_port}",
+            "--profile-directory=Default",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--start-maximized",
+        ]
+        logger.info("Launching dedicated JobHunter Chrome (profile=%s, port=%s)", profile_dir, self.debug_port)
+        try:
+            subprocess.Popen(args)
+        except OSError as exc:
+            raise RuntimeError(f"Failed to launch Chrome: {exc}") from exc
+
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            if self._cdp_reachable(debug_url, timeout=1.0):
+                logger.info("Dedicated JobHunter Chrome is ready at %s", debug_url)
+                return
+            time.sleep(0.5)
+        raise RuntimeError(f"Dedicated Chrome did not open the debug port at {debug_url} within 20s")
 
     def _verify_bundled_chromium(self) -> None:
         """Raise a clear error when Playwright's bundled Chromium is missing.
@@ -213,7 +552,9 @@ class BrowserSession:
     def new_page(self) -> Page:
         if self._context is None:
             raise RuntimeError("Browser session not started. Call start() first.")
-        return self._context.new_page()
+        page = self._context.new_page()
+        self._agent_pages.append(page)
+        return page
 
     def new_tab(self, url: str = "") -> Page:
         """Open a new tab (optionally navigated) and return it."""
@@ -222,8 +563,23 @@ class BrowserSession:
             page.goto(url, timeout=45000, wait_until="domcontentloaded")
         return page
 
+    def open_page(self, url: str) -> Page:
+        """Open a tab that survives detach (e.g. for a manual one-time login).
+
+        Unlike :meth:`new_tab`, the page is *not* registered for agent cleanup,
+        so calling :meth:`stop` detaches from CDP and leaves the tab open in the
+        JobHunter window.
+        """
+        if self._context is None:
+            raise RuntimeError("Browser session not started. Call start() first.")
+        page = self._context.new_page()
+        page.goto(url, timeout=45000, wait_until="domcontentloaded")
+        return page
+
     def close_page(self, page: Page) -> None:
         """Close a tab, swallowing errors (page may already be closed)."""
+        if page in self._agent_pages:
+            self._agent_pages.remove(page)
         try:
             if page and not page.is_closed():
                 page.close()
@@ -231,12 +587,11 @@ class BrowserSession:
             logger.debug("Could not close page: %s", exc)
 
     def close_all_pages(self) -> None:
-        """Close every open tab except the first (keeps the window tidy)."""
-        if self._context is None:
-            return
-        pages = self._context.pages
-        for page in pages[1:]:
+        """Close every tab the agent opened (never touches the user's own tabs)."""
+        pages = list(self._agent_pages)
+        for page in pages:
             self.close_page(page)
+        self._agent_pages.clear()
 
     def save_state(self) -> None:
         """Persist cookies/localStorage so logins survive between runs."""
@@ -246,6 +601,19 @@ class BrowserSession:
             logger.info("Browser session state saved to %s", path)
 
     def stop(self) -> None:
+        if self.using_cdp:
+            # Never close the user's browser or context — only the tabs we opened.
+            try:
+                self.close_all_pages()
+            except Exception as exc:
+                logger.warning("CDP cleanup of agent tabs failed: %s", exc)
+            if self._playwright is not None:
+                try:
+                    self._playwright.stop()
+                except Exception as exc:
+                    logger.warning("CDP detach failed: %s", exc)
+            logger.info("Detached from Chrome (your window stays open)")
+            return
         try:
             self.save_state()
         except Exception as exc:  # pragma: no cover - best effort
@@ -270,8 +638,6 @@ def _copy_minimal_profile(source: Path, dst: Path) -> None:
     individually rather than aborting the whole copy, so the existing profile
     is always preferred over silently dropping to a fresh, logged-out profile.
     """
-    import time
-
     src_default = source / "Default"
     temp = dst.with_name(dst.name + ".tmp")
     backup = dst.with_name(dst.name + ".bak")
@@ -360,3 +726,139 @@ def is_logged_in(page: Page, logged_in_selector: str) -> bool:
     if not logged_in_selector:
         return True
     return wait_for(page, logged_in_selector, timeout_ms=3000)
+
+
+def build_session(settings) -> BrowserSession:
+    """Construct a BrowserSession from a Settings object (shared by all helpers)."""
+    return BrowserSession(
+        settings.browser_state_dir,
+        settings.headless_browser,
+        settings.browser_channel,
+        settings.browser_use_default_profile,
+        settings.browser_user_data_dir,
+        settings.browser_cdp_url,
+        settings.browser_profile_dir,
+        settings.browser_debug_port,
+        settings.browser_use_dedicated_profile,
+    )
+
+
+def browser_status(settings=None) -> dict:
+    """Snapshot of the JobHunter browser state for the UI status line.
+
+    Returns keys: ``running`` (dedicated window CDP reachable), ``cdp_url``,
+    ``profile_dir``, ``chrome_running`` (any normal Chrome process), and
+    ``user_data_dir`` (the user's real Chrome profile dir, or None). Read-only.
+    """
+    from jobhunter.config import get_settings  # local import to avoid import cycles
+
+    if settings is None:
+        settings = get_settings()
+    debug_url = f"http://127.0.0.1:{settings.browser_debug_port}"
+    return {
+        "running": BrowserSession._cdp_reachable(debug_url),
+        "cdp_url": debug_url,
+        "profile_dir": str(settings.browser_profile_dir),
+        "chrome_running": is_chrome_running(),
+        "user_data_dir": detect_chrome_user_data_dir(),
+    }
+
+
+def check_portal_logins(settings=None, session: BrowserSession | None = None) -> dict[str, bool]:
+    """Report (presence-only) whether each portal is logged in, per site.
+
+    Opens a fresh tab in the JobHunter window for each portal, evaluates a
+    boolean DOM expression, and closes it. Never reads or logs cookie/session
+    values. Returns e.g. ``{"naukri": True, "linkedin": False, "indeed": True}``.
+    """
+    from jobhunter.config import get_settings  # local import to avoid import cycles
+
+    if settings is None:
+        settings = get_settings()
+    if session is None:
+        session = build_session(settings)
+        session.start()
+        own_session = True
+    else:
+        own_session = False
+
+    results: dict[str, bool] = {}
+    try:
+        for portal, (url, selectors) in PORTAL_LOGIN_CHECKS.items():
+            page = None
+            try:
+                page = session.new_tab(url)
+                page.wait_for_timeout(3000)
+                results[portal] = bool(page.evaluate(_logged_in_js(selectors)))
+            except Exception as exc:
+                logger.warning("Login check failed for %s: %s", portal, exc)
+                results[portal] = False
+            finally:
+                if page is not None:
+                    session.close_page(page)
+    finally:
+        if own_session:
+            session.stop()
+    return results
+
+
+def open_login_page(settings=None, url: str = "") -> str:
+    """Open ``url`` in the JobHunter window for a one-time manual login.
+
+    Ensures the dedicated window is running, opens the given portal (a fresh
+    tab that stays open after detach), then detaches. Returns a status message.
+    """
+    from jobhunter.config import get_settings  # local import to avoid import cycles
+
+    if settings is None:
+        settings = get_settings()
+    if not url:
+        url = PORTAL_LOGIN_CHECKS["naukri"][0]
+    session = build_session(settings)
+    session.start()
+    try:
+        session.open_page(url)
+    finally:
+        session.stop()
+    return f"Opened {url} in the JobHunter window — log in there once; it is remembered."
+
+
+def launch_dedicated_browser(settings) -> str:
+    """Ensure the dedicated JobHunter Chrome is running; return a status message.
+
+    Launches the persistent automation window on its own profile when it is not
+    already running, then verifies the CDP endpoint. Never touches the user's
+    default Chrome profile and never closes any running Chrome.
+    """
+    from jobhunter.config import get_settings  # local import to avoid import cycles
+
+    if settings is None:
+        settings = get_settings()
+    debug_url = f"http://127.0.0.1:{settings.browser_debug_port}"
+
+    if settings.browser_cdp_url:
+        if BrowserSession._cdp_reachable(settings.browser_cdp_url):
+            return "Browser connected — attached to the configured CDP endpoint."
+        return (
+            "Configured CDP endpoint is not reachable. Start Chrome on the "
+            "configured port first, then retry."
+        )
+
+    if not settings.browser_use_dedicated_profile:
+        return (
+            "Dedicated JobHunter browser is disabled (BROWSER_USE_DEDICATED_PROFILE=false). "
+            "Enable it in .env or settings to use the persistent browser."
+        )
+
+    session = build_session(settings)
+    if BrowserSession._cdp_reachable(debug_url):
+        return (
+            f"Browser connected — reusing the dedicated JobHunter window "
+            f"(port {settings.browser_debug_port})."
+        )
+    session._launch_dedicated(debug_url)
+    return (
+        f"Browser started — dedicated JobHunter window launched on port "
+        f"{settings.browser_debug_port} (profile: {session._resolved_profile_dir()}). "
+        "Log in to Naukri/Indeed once; sessions persist between runs."
+    )

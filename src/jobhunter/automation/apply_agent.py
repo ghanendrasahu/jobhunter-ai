@@ -24,7 +24,8 @@ from typing import Any
 
 from jobhunter.agent import _default_llm
 from jobhunter.automation import strategies
-from jobhunter.automation.browser import BrowserSession, is_logged_in
+from jobhunter.automation.browser import BrowserSession, build_session, is_logged_in
+from jobhunter.automation.candidate import build_candidate
 from jobhunter.automation.evaluator import evaluate_job
 from jobhunter.automation.form_filler import fill_form
 from jobhunter.automation.prioritizer import sort_jobs_by_priority
@@ -32,7 +33,9 @@ from jobhunter.automation.profile import profile_from_resume
 from jobhunter.automation.roles import priority_role_titles
 from jobhunter.automation.strategies import fill_input
 from jobhunter.config import Settings, get_settings
-from jobhunter.storage.history import load_applied_jobs, save_applied_jobs
+from jobhunter.domains.eligibility import evaluate_eligibility
+from jobhunter.domains.search.plan import _FRESHER_TERMS, dedupe_fresher_terms
+from jobhunter.storage.history import load_applied_jobs, record_application_outcome, save_applied_jobs
 
 logger = logging.getLogger(__name__)
 
@@ -100,11 +103,12 @@ class ApplyAgent:
         if roles:
             query = roles[0]
             self._report("info", "start", f"Priority roles: {', '.join(roles)}")
-        if self.settings.fresher_only and not any(
-            k in query.lower() for k in ("fresher", "entry level", "junior")
-        ):
-            query = f"{query} fresher"
-            self._report("info", "start", f"Fresher mode on — search query set to '{query}'")
+        if self.settings.fresher_only:
+            self._report(
+                "info", "start",
+                f"Fresher mode on — queries include 'fresher' and jobs requiring "
+                f"more than {self.settings.max_experience_years} years are skipped.",
+            )
 
         self._report("info", "start", f"Mode={mode} | Portals={portals} | Batch={self._cycle_budget}")
         self._report("info", "profile", f"Profile: {profile['email'] or 'no email'} | skills: {len(profile['skills'])}")
@@ -115,21 +119,33 @@ class ApplyAgent:
 
         results: list[dict] = []
         applied = load_applied_jobs(resume_text)
-        session = BrowserSession(
-            self.settings.browser_state_dir,
-            self.settings.headless_browser,
-            self.settings.browser_channel,
-            self.settings.browser_use_default_profile,
-            self.settings.browser_user_data_dir,
-        )
+        session = build_session(self.settings)
         try:
             session.start()
-            self._report(
-                "info", "browser",
-                "Using your default Chrome profile (existing logins reused). "
-                if session.using_default_profile
-                else "Using dedicated browser profile.",
-            )
+            if session.using_cdp and session.using_dedicated_profile:
+                if session.reused_existing:
+                    self._report(
+                        "info", "browser",
+                        "Browser connected — reusing your dedicated JobHunter window and logins.",
+                    )
+                else:
+                    self._report(
+                        "info", "browser",
+                        "Browser started — your dedicated JobHunter window is open. Log in to "
+                        "Naukri/Indeed once; sessions persist between runs.",
+                    )
+            elif session.using_cdp:
+                self._report(
+                    "info", "browser",
+                    "Browser connected — attached to the configured CDP endpoint.",
+                )
+            else:
+                self._report(
+                    "info", "browser",
+                    "Using your default Chrome profile (existing logins reused). "
+                    if session.using_default_profile
+                    else "Using dedicated browser profile.",
+                )
 
             cycle = 0
             while True:
@@ -171,6 +187,7 @@ class ApplyAgent:
             except Exception:
                 pass
             session.stop()
+            self._report("info", "browser", "Browser disconnected — the dedicated window stays open for the next run.")
 
         return {"results": results, "log": self._log, "mode": mode, "cycles": cycle}
 
@@ -233,6 +250,7 @@ class ApplyAgent:
         jobs = sort_jobs_by_priority(jobs, priority_titles, self._prioritize_remote)
         self._report("info", portal, f"{len(jobs)} jobs found")
 
+        candidate = build_candidate(resume_text, profile=profile) if resume_text else None
         attempts = 0
         for job in jobs:
             if attempts >= max_applications:
@@ -242,7 +260,7 @@ class ApplyAgent:
 
             job_id = job.get("id") or ""
             if job_id in applied or job.get("url") in applied:
-                self._report("info", portal, f"Skipping already-applied {job['title']} @ {job['company']}")
+                self._report("info", portal, f"Skipping already-applied {job.get('title', '?')} @ {job.get('company', '?')}")
                 continue
 
             if self.settings.fresher_only:
@@ -250,28 +268,54 @@ class ApplyAgent:
                 if required is not None and required > self.settings.max_experience_years:
                     self._report(
                         "info", portal,
-                        f"Skipping {job['title']} @ {job['company']} — requires {required}+ yrs",
+                        f"Skipping {job.get('title', '?')} @ {job.get('company', '?')} — requires {required}+ yrs",
                     )
                     continue
+
+            eligibility = evaluate_eligibility(job, candidate=candidate, llm=self._llm)
+            if eligibility.decision == "skip":
+                self._report(
+                    "warning", portal,
+                    f"HARD SKIP {job.get('title', '?')} @ {job.get('company', '?')} — {'; '.join(eligibility.reasons) or 'not eligible'}",
+                )
+                continue
+            if eligibility.decision == "review":
+                detail = "; ".join(eligibility.reasons) or "; ".join(eligibility.exposed) or "needs review"
+                self._report(
+                    "warning", portal,
+                    f"REVIEW {job.get('title', '?')} @ {job.get('company', '?')} — {detail}",
+                )
+                self._record_outcome(resume_text, job, {
+                    "status": "needs_review",
+                    "detail": detail,
+                })
+                continue
 
             evaluation = evaluate_job(job, resume_text, self._llm)
             self._report(
                 "info", portal,
-                f"{job['title']} @ {job['company']} — {evaluation['decision']} ({evaluation['score']}%)",
+                f"{job.get('title', '?')} @ {job.get('company', '?')} — {evaluation['decision']} ({evaluation['score']}%)",
             )
             if evaluation["decision"] != "apply":
                 continue
 
             attempts += 1  # counts every apply attempt, keeping the run bounded
-            outcome = self._apply_to_job(session, portal, job, profile, mode, resume_pdf)
+            outcome = self._apply_job_with_recovery(session, portal, job, profile, mode, resume_pdf)
             outcome["evaluation"] = evaluation
             outcomes.append(outcome)
 
-            if outcome.get("status") in ("submitted", "handed_off"):
+            if outcome.get("status") == "submitted":
+                # Only a truly submitted application marks the job as applied;
+                # everything else stays eligible for a later run.
                 self._record_application(resume_text, job, outcome)
                 applied.add(job_id)
                 if job.get("url"):
                     applied.add(job["url"])
+            else:
+                # Persist the outcome (handed_off/failed/blocked/needs_review/
+                # no_apply_button) WITHOUT marking the job as applied, so it
+                # remains eligible to be (re)submitted on a later run.
+                self._record_outcome(resume_text, job, outcome)
                 if mode == "human" and outcome.get("status") == "handed_off":
                     # Human-in-the-loop: pause so the user can finish the form.
                     self._report("info", portal, "Waiting 20s for you to complete the form in the browser window…")
@@ -309,11 +353,16 @@ class ApplyAgent:
         mode: str,
         resume_pdf: str | None,
     ) -> dict:
-        base = {"job_id": job["id"], "title": job["title"], "company": job["company"], "source": portal}
+        base = {
+            "job_id": job.get("id", "unknown"),
+            "title": job.get("title", ""),
+            "company": job.get("company", ""),
+            "source": portal,
+        }
 
         job_page = session.new_tab()
         try:
-            self._goto(job_page, job["url"])
+            self._goto(job_page, job.get("url", ""))
         except Exception as exc:
             session.close_page(job_page)
             return {**base, "status": "failed", "detail": f"Could not open job page: {exc}"}
@@ -363,12 +412,7 @@ class ApplyAgent:
                 "filled_fields": stats,
             }
         else:
-            submitted = (
-                strategies.click_by_text(form_page, "Submit application")
-                or strategies.click_by_text(form_page, "Submit")
-                or strategies.click_by_text(form_page, "Submit now")
-                or strategies.click_by_text(form_page, "Apply")
-            )
+            submitted = self._submit_and_advance(form_page, profile, resume_pdf)
             if submitted:
                 result = {**base, "status": "submitted", "detail": "Application submitted automatically.", "filled_fields": stats}
             else:
@@ -380,6 +424,56 @@ class ApplyAgent:
             pass
         session.close_page(job_page)
         return result
+
+    def _apply_job_with_recovery(
+        self,
+        session: BrowserSession,
+        portal: str,
+        job: dict,
+        profile: dict,
+        mode: str,
+        resume_pdf: str | None,
+        retries: int = 2,
+    ) -> dict:
+        """Apply to one job, recovering from a browser crash with bounded retries.
+
+        When Playwright reports the browser/context is closed (e.g. the Chrome
+        window was closed mid-application), the session is re-launched/reattached
+        and the job is retried up to ``retries`` times instead of aborting the
+        whole run. The rest of the batch keeps going.
+        """
+        last_error: Exception | None = None
+        for attempt in range(retries):
+            try:
+                return self._apply_to_job(session, portal, job, profile, mode, resume_pdf)
+            except Exception as exc:
+                if not _browser_crashed(exc):
+                    raise
+                last_error = exc
+                logger.warning(
+                    "Browser crash while applying to %s (attempt %d/%d): %s",
+                    job.get("id", "?"), attempt + 1, retries, exc,
+                )
+                try:
+                    session.restart()
+                except Exception as restart_exc:
+                    logger.error("Browser restart failed: %s", restart_exc)
+                    break
+        return {
+            "job_id": job.get("id", "unknown"),
+            "title": job.get("title", ""),
+            "company": job.get("company", ""),
+            "source": portal,
+            "status": "failed",
+            "detail": f"Browser crashed during application: {last_error or 'unknown error'}",
+        }
+
+    def _record_outcome(self, resume_text: str, job: dict, outcome: dict) -> None:
+        """Persist a non-submitted outcome without marking the job as applied."""
+        try:
+            record_application_outcome(resume_text, job, outcome)
+        except Exception as exc:
+            logger.warning("Failed to record outcome: %s", exc)
 
     def _click_apply_capture_popup(self, session: BrowserSession, page) -> tuple[bool, Any]:
         """Click Apply, returning ``(clicked, form_page)``.
@@ -407,6 +501,34 @@ class ApplyAgent:
             # No popup opened (form is a modal in the same page) — or click failed.
             clicked = strategies.click_apply(page)
             return clicked, page
+
+    def _submit_and_advance(self, form_page, profile: dict, resume_pdf: str | None) -> bool:
+        """Fill, advance multi-step forms, and click submit.
+
+        Naukri instant-apply is multi-step: fields are revealed per step and the
+        Submit button only exists on the final step. We cycle fill → click
+        Continue/Next → refill newly revealed fields → submit, up to 5 steps.
+        Returns True only when a final submit action was clicked.
+        """
+        seen_signatures: set[frozenset[str]] = set()
+        for _ in range(5):
+            try:
+                fill_form(form_page, profile, resume_pdf)
+            except Exception:
+                return False
+            if strategies.click_submit(form_page):
+                return True
+            if not strategies.click_step_advance(form_page):
+                return False
+            try:
+                form_page.wait_for_timeout(1500)
+            except Exception:
+                return False
+            signature = _visible_controls(form_page)
+            if signature in seen_signatures:
+                return False
+            seen_signatures.add(signature)
+        return False
 
     # ------------------------------------------------------------------ support
     def _ensure_login(self, page, portal: str) -> bool:
@@ -530,13 +652,16 @@ class ApplyAgent:
 
     def _record_application(self, resume_text: str, job: dict, outcome: dict) -> None:
         try:
-            save_applied_jobs(resume_text, [outcome["job_id"]], [{
-                "job_id": outcome["job_id"],
+            job_id = outcome.get("job_id", job.get("id", "unknown"))
+            save_applied_jobs(resume_text, [job_id], [{
+                "job_id": job_id,
                 "title": job.get("title"),
                 "company": job.get("company"),
                 "source": job.get("source", job.get("portal")),
                 "url": job.get("url", ""),
                 "match_score": outcome.get("evaluation", {}).get("score"),
+                "status": outcome.get("status", "submitted"),
+                "detail": outcome.get("detail", ""),
                 "applied_at": _now_iso(),
             }])
         except Exception as exc:
@@ -557,17 +682,42 @@ def _query_for_cycle(base_query: str, roles: list[str] | None, cycle: int, setti
     """Pick the query for a continuous cycle.
 
     Rotates through the user's chosen roles first, then applies fresher/remote
-    variant suffixes across cycles so the search keeps widening coverage.
+    variant suffixes across cycles so the search keeps widening coverage. In
+    fresher-only mode the word ``fresher`` (or an equivalent term) appears at
+    most once per query, no matter which variants are active.
     """
     variants = [v.strip() for v in (settings.query_variants or "").split(",") if v.strip()]
 
     if roles:
         role = roles[(cycle - 1) % len(roles)]
         suffix = variants[(cycle - 1) // len(roles) % len(variants)] if variants else ""
-        return f"{role} {suffix}".strip()
-    if variants:
-        return f"{base_query} {variants[(cycle - 1) % len(variants)]}".strip()
-    return base_query
+        query = f"{role} {suffix}".strip()
+    elif variants:
+        query = f"{base_query} {variants[(cycle - 1) % len(variants)]}".strip()
+    else:
+        query = base_query
+
+    if settings.fresher_only:
+        query = dedupe_fresher_terms(query)
+        if not any(term in query.lower() for term in _FRESHER_TERMS):
+            query = f"{query} fresher".strip()
+    return query
+
+
+def _browser_crashed(exc: Exception) -> bool:
+    """Return True when a Playwright error means the browser/context is gone."""
+    try:
+        from playwright._impl._errors import TargetClosedError
+
+        if isinstance(exc, TargetClosedError):
+            return True
+    except Exception:
+        pass
+    text = str(exc).lower()
+    return any(
+        marker in text
+        for marker in ("has been closed", "target closed", "context closed", "browser closed")
+    )
 
 
 def _click_selector(page, selector: str) -> bool:
@@ -586,6 +736,26 @@ def _safe_logged_in(page, logged_in_selector: str) -> bool:
         return is_logged_in(page, logged_in_selector)
     except Exception:
         return False
+
+
+def _visible_controls(page) -> frozenset[str]:
+    """Signature of currently visible form controls (across frames)."""
+    keys: set[str] = set()
+    for frame in page.frames:
+        try:
+            controls = frame.query_selector_all("input, textarea, select")
+        except Exception:
+            continue
+        for handle in controls:
+            try:
+                if not handle.is_visible():
+                    continue
+                keys.add(handle.evaluate(
+                    "el => (el.name || '') + '|' + (el.id || '') + '|' + (el.type || '')"
+                ))
+            except Exception:
+                continue
+    return frozenset(keys)
 
 
 def _now_iso() -> str:

@@ -85,6 +85,20 @@ class Settings(BaseSettings):
     browser_use_default_profile: bool = True
     # Optional explicit Chrome "User Data" directory (auto-detected when empty).
     browser_user_data_dir: str = ""
+    # Dedicated persistent JobHunter browser (preferred). A separate, visible
+    # Chrome window on its own profile dir is launched once with a remote
+    # debugging port and reused across runs, so manual portal logins persist.
+    # The user's real (default) Chrome profile is never touched. Disable to
+    # always use the copied default-profile fallback instead.
+    browser_use_dedicated_profile: bool = True
+    # Directory for the dedicated JobHunter Chrome profile.
+    browser_profile_dir: Path = PROJECT_ROOT / "data" / "browser_state" / "automation_profile"
+    # Remote-debugging port used by the dedicated JobHunter Chrome.
+    browser_debug_port: int = 9222
+    # Optional explicit CDP endpoint override (e.g. http://127.0.0.1:9222).
+    # When set, the agent connects to that already-running browser instead of
+    # launching the dedicated one.
+    browser_cdp_url: str = ""
     # Seconds to wait for a manual login in the opened browser window.
     manual_login_timeout: int = 180
     # Only consider fresher/entry-level roles (filters out senior listings).
@@ -99,8 +113,16 @@ class Settings(BaseSettings):
     prioritize_remote: bool = True
     # Query suffixes rotated across continuous-mode cycles (comma-separated).
     query_variants: str = "fresher,entry level,remote"
+    # Search-plan locations swept for primary queries (comma-separated).
+    search_locations: str = "India,Bengaluru,Remote,Hybrid"
     # How many result pages to walk through per query in a cycle.
     paginate_depth: int = 3
+
+    # Full job-description refresh (PHASE 1A): when enabled, jobs whose result
+    # snippet is too thin trigger a full-page fetch of the job description.
+    fetch_full_descriptions: bool = False
+    # Max number of full-description pages fetched per search.
+    fetch_full_description_max: int = 5
 
     # Runtime paths and limits
     upload_dir: Path = PROJECT_ROOT / "uploads"

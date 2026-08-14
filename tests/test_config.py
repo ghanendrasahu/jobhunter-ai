@@ -27,3 +27,12 @@ def test_missing_api_keys_empty_when_configured():
         settings.return_value.adzuna_api_key = "key"
         settings.return_value.jooble_api_key = "jb-test"
         assert missing_api_keys() == []
+
+
+def test_browser_dedicated_settings_defaults():
+    from jobhunter.config import Settings
+
+    settings = Settings()
+    assert settings.browser_use_dedicated_profile is True
+    assert settings.browser_debug_port == 9222
+    assert "automation_profile" in str(settings.browser_profile_dir)
