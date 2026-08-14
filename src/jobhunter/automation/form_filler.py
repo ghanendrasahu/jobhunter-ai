@@ -13,6 +13,8 @@ from typing import TypedDict
 
 from playwright.sync_api import Page
 
+from jobhunter.domains.qa_catalog import intent_matches_field
+
 logger = logging.getLogger(__name__)
 
 
@@ -135,12 +137,20 @@ def _value_for(field: str, profile: dict) -> str | None:
     return None
 
 
-def fill_form(page: Page, profile: dict, resume_pdf: str | None = None) -> FillStats:
+def fill_form(page: Page, profile: dict, resume_pdf: str | None = None, qa=None) -> FillStats:
     """Auto-fill an application form from the profile. Returns fill statistics.
 
     Traverses the main document and any iframes (many ATS forms render inside
     frames), filling each visible, classified field it can map to the profile.
     Classified fields with no profile value are collected in ``missing``.
+
+    ``qa`` is an optional Q&A memory (:class:`jobhunter.automation.qa.QAMemory`).
+    When provided, controls the field classifier marks as ``unknown`` are first
+    consulted against remembered question answers. A confident, non-sensitive
+    answer whose canonical intent matches the target field/label fills the
+    field; everything else stays for the user (an LLM classification alone is
+    never enough). Defaults to ``None`` so existing callers behave exactly as
+    before.
     """
     stats: FillStats = {"filled": 0, "skipped": 0, "unknown": 0, "file_uploaded": False, "missing": []}
 
@@ -158,13 +168,13 @@ def fill_form(page: Page, profile: dict, resume_pdf: str | None = None) -> FillS
             if key in seen_handles:
                 continue
             seen_handles.add(key)
-            if _fill_control(handle, profile, resume_pdf, stats):
+            if _fill_control(handle, profile, resume_pdf, stats, qa):
                 stats["filled"] += 1
     stats["missing"] = sorted(set(stats["missing"]))
     return stats
 
 
-def _fill_control(handle, profile: dict, resume_pdf: str | None, stats: FillStats) -> bool:
+def _fill_control(handle, profile: dict, resume_pdf: str | None, stats: FillStats, qa=None) -> bool:
     """Fill a single control. Returns True when a value was written."""
     try:
         tag = handle.evaluate("el => el.tagName")
@@ -184,6 +194,14 @@ def _fill_control(handle, profile: dict, resume_pdf: str | None, stats: FillStat
 
     if field == "unknown":
         stats["unknown"] += 1
+        if qa is not None:
+            response = qa.answer_for_question(text)
+            if (
+                response.status == "answer"
+                and intent_matches_field(response.intent, text)
+                and _fill_from_qa(handle, tag, response.answer)
+            ):
+                return True
         return False
     if is_skippable(handle.get_attribute("id") or "", handle.get_attribute("name") or "",
                     handle.get_attribute("placeholder") or "", text):
@@ -193,8 +211,9 @@ def _fill_control(handle, profile: dict, resume_pdf: str | None, stats: FillStat
     if tag == "SELECT":
         if _fill_select(handle, profile, field):
             return True
-        if not _value_for(field, profile):
-            stats["missing"].append(field)
+        # No exact option matched: treat the field as needing a value so the
+        # user is asked rather than silently picking an arbitrary option.
+        stats["missing"].append(field)
         return False
 
     el_type = ""
@@ -248,16 +267,32 @@ def _fill_select(handle, profile: dict, field: str) -> bool:
             if normalize(opt) == normalize(value) or normalize(opt) in normalize(value) or normalize(value) in normalize(opt):
                 best = opt
                 break
-        if best is None:
-            # Pick first meaningful option for years-of-experience style dropdowns.
-            for opt in options:
-                stripped = opt.strip()
-                if stripped and stripped != "Select" and stripped != "- Select -":
-                    best = opt
-                    break
         if best is not None:
             handle.select_option(label=best, timeout=2000)
             return True
     except Exception as exc:
         logger.debug("Select fill failed: %s", exc)
     return False
+
+
+def _fill_from_qa(handle, tag: str, value: str) -> bool:
+    """Fill a control with a Q&A-memory answer (best-effort, never raises)."""
+    if not value:
+        return False
+    try:
+        if tag == "SELECT":
+            options = handle.evaluate("el => Array.from(el.options).map(o => o.text)")
+            best = None
+            for opt in options:
+                if normalize(opt) == normalize(value) or normalize(opt) in normalize(value) or normalize(value) in normalize(opt):
+                    best = opt
+                    break
+            if best is None:
+                return False
+            handle.select_option(label=best, timeout=2000)
+            return True
+        handle.fill(value, timeout=2000)
+        return True
+    except Exception as exc:
+        logger.debug("Q&A fill failed for %r: %s", value, exc)
+        return False
