@@ -1,6 +1,12 @@
 """Tests for the form-field classifier and job evaluator fallback."""
 
-from jobhunter.automation.apply_agent import ApplyAgent, _browser_crashed, _query_for_cycle
+from jobhunter.automation.apply_agent import (
+    ApplyAgent,
+    _browser_crashed,
+    _query_for_cycle,
+    _verify_submission,
+)
+from jobhunter.automation.browser import SessionSafetyError
 from jobhunter.automation.evaluator import _fallback_decision
 from jobhunter.automation.form_filler import (
     _fill_control,
@@ -215,3 +221,147 @@ def test_unmatched_select_reported_missing():
     assert filled is False
     assert "experience_years" in stats["missing"]
     assert handle.selected is None
+
+
+# ---------------------------------------------------------------------------
+# Pre-PHASE-7 hardening: honest post-submit verification
+# ---------------------------------------------------------------------------
+class _FakeFormPage:
+    def __init__(self, url="", text="", frames=None):
+        self._url = url
+        self._text = text
+
+    @property
+    def url(self):
+        return self._url
+
+    def inner_text(self, selector):
+        return self._text
+
+    def wait_for_timeout(self, ms):
+        return None
+
+
+def test_verify_submission_success_marker():
+    page = _FakeFormPage(text="Your application has been submitted successfully. Thank you.")
+    assert _verify_submission(page) == "submitted"
+
+
+def test_verify_submission_success_in_url():
+    page = _FakeFormPage(url="https://www.naukri.com/apply/success?job=1", text="")
+    assert _verify_submission(page) == "submitted"
+
+
+def test_verify_submission_error_marker():
+    page = _FakeFormPage(text="There was a problem submitting your application. Please try again.")
+    assert _verify_submission(page) == "failed"
+
+
+def test_verify_submission_obstacle_marker():
+    page = _FakeFormPage(text="Complete a security check to verify you are human.")
+    assert _verify_submission(page) == "failed"
+
+
+def test_verify_submission_unknown_when_no_marker():
+    page = _FakeFormPage(text="Please review your details before continuing.")
+    assert _verify_submission(page) == "unknown"
+
+
+def test_verify_submission_unknown_when_page_raises():
+    class _BrokenPage:
+        def wait_for_timeout(self, ms):
+            raise RuntimeError("browser closed")
+
+    assert _verify_submission(_BrokenPage()) == "unknown"
+
+
+def test_submit_outcome_verified_submission_is_submitted():
+    base = {"job_id": "j1", "title": "Dev", "company": "Acme", "source": "naukri"}
+    result = ApplyAgent._submit_outcome(base, {}, clicked=True, verified="submitted")
+    assert result["status"] == "submitted"
+
+
+def test_submit_outcome_clicked_but_unverified_is_needs_review():
+    base = {"job_id": "j1", "title": "Dev", "company": "Acme", "source": "naukri"}
+    result = ApplyAgent._submit_outcome(base, {}, clicked=True, verified="unknown")
+    assert result["status"] == "needs_review"
+
+
+def test_submit_outcome_clicked_then_failed_is_failed():
+    base = {"job_id": "j1", "title": "Dev", "company": "Acme", "source": "naukri"}
+    result = ApplyAgent._submit_outcome(base, {}, clicked=True, verified="failed")
+    assert result["status"] == "failed"
+
+
+def test_submit_outcome_no_submit_button_is_needs_review():
+    base = {"job_id": "j1", "title": "Dev", "company": "Acme", "source": "naukri"}
+    result = ApplyAgent._submit_outcome(base, {}, clicked=False, verified="unknown")
+    assert result["status"] == "needs_review"
+
+
+# ---------------------------------------------------------------------------
+# Pre-PHASE-7 hardening: explicit Job -> Apply contract guards
+# ---------------------------------------------------------------------------
+def test_should_attempt_apply_refuses_discovery_only():
+    ok, reason = ApplyAgent._should_attempt_apply("naukri", {"source": "naukri", "discovery_only": True, "url": "https://x"})
+    assert ok is False
+    assert "discovery" in reason.lower()
+
+
+def test_should_attempt_apply_refuses_unsupported_source():
+    ok, reason = ApplyAgent._should_attempt_apply("naukri", {"source": "foundit", "url": "https://x"})
+    assert ok is False
+    assert "fall through" in reason.lower()
+
+
+def test_should_attempt_apply_refuses_missing_url():
+    ok, reason = ApplyAgent._should_attempt_apply("naukri", {"source": "naukri", "title": "Dev"})
+    assert ok is False
+    assert "url" in reason
+
+
+def test_should_attempt_apply_allows_supported_complete_job():
+    ok, reason = ApplyAgent._should_attempt_apply("naukri", {"source": "naukri", "title": "Dev", "url": "https://x"})
+    assert ok is True
+    assert reason == ""
+
+
+def test_should_attempt_apply_allows_collect_cards_job():
+    job = {"id": "naukri-abc", "source": "naukri", "portal": "naukri", "title": "Dev", "company": "Acme", "url": "https://x"}
+    ok, reason = ApplyAgent._should_attempt_apply("naukri", job)
+    assert ok is True
+
+
+# ---------------------------------------------------------------------------
+# Pre-PHASE-7 hardening: auto-apply refuses an unsafe browser session
+# ---------------------------------------------------------------------------
+def test_run_aborts_safely_when_dedicated_session_unavailable(monkeypatch):
+    agent = ApplyAgent()
+
+    class _FakeSession:
+        def __init__(self, *a, **k):
+            self.stopped = False
+
+        def start(self):
+            raise SessionSafetyError("dedicated browser could not be established")
+
+        def close_all_pages(self):
+            pass
+
+        def stop(self):
+            self.stopped = True
+
+    fake = _FakeSession()
+    monkeypatch.setattr(
+        "jobhunter.automation.apply_agent.build_session",
+        lambda settings, allow_copied_fallback=True: fake,
+    )
+    monkeypatch.setattr("jobhunter.automation.apply_agent._default_llm", lambda: object())
+
+    result = agent.run("Data Analyst", "resume text", mode="auto")
+
+    assert result["results"] == []
+    assert result["mode"] == "auto"
+    assert "error" in result
+    assert any("blocked" in entry["message"].lower() for entry in result["log"])
+    assert fake.stopped is True

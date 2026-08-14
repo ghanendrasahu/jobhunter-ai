@@ -46,6 +46,16 @@ class _BrowserMissing(Exception):
         self.channel = channel
         super().__init__(f"browser executable missing for channel={channel}")
 
+
+class SessionSafetyError(RuntimeError):
+    """Raised when a safe, authenticated browser session cannot be established.
+
+    Auto-apply must never run on a copied/logged-out profile: if the dedicated
+    JobHunter window (CDP + automation profile) cannot be started or attached,
+    callers that require authentication (the apply agent) must refuse rather
+    than silently fall back to a session whose logins do not survive Chrome 127+.
+    """
+
 # Top-level Chrome "User Data" files needed for a working profile.
 _PROFILE_TOP_FILES = ("Local State", "First Run")
 # Files inside the profile dir needed for cookies/session + basic config.
@@ -223,6 +233,7 @@ class BrowserSession:
         profile_dir: Path | None = None,
         debug_port: int = 9222,
         use_dedicated_profile: bool = True,
+        allow_copied_fallback: bool = True,
     ):
         self.state_dir = Path(state_dir)
         self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -234,6 +245,7 @@ class BrowserSession:
         self.profile_dir = Path(profile_dir) if profile_dir else None
         self.debug_port = debug_port
         self.use_dedicated_profile = use_dedicated_profile
+        self.allow_copied_fallback = allow_copied_fallback
         self.using_default_profile = False
         self.using_cdp = False
         self.using_dedicated_profile = False
@@ -250,6 +262,11 @@ class BrowserSession:
 
         Priority: explicit ``cdp_url`` override → dedicated automation profile
         (launch-or-attach via CDP) → copied default-profile launch.
+
+        When ``allow_copied_fallback`` is False (the auto-apply path), the
+        copied-profile fallback is refused: auto-apply must never silently run
+        on a copied/logged-out session, so a ``SessionSafetyError`` is raised
+        instead of launching one.
         """
         self._playwright = sync_playwright().start()
 
@@ -260,11 +277,26 @@ class BrowserSession:
             try:
                 return self.ensure_connected()
             except Exception as exc:
+                self._cleanup_playwright()
+                if not self.allow_copied_fallback:
+                    raise SessionSafetyError(
+                        "Dedicated authenticated browser could not be established "
+                        f"({exc}). Auto-apply refused: it must never run on a copied "
+                        "or logged-out profile. Start the JobHunter window and log in "
+                        "to Naukri/Indeed once, then re-run."
+                    ) from exc
                 logger.warning(
                     "Dedicated automation profile unavailable (%s); "
                     "falling back to copied-profile launch", exc,
                 )
-                self._cleanup_playwright()
+
+        if not self.allow_copied_fallback:
+            self._cleanup_playwright()
+            raise SessionSafetyError(
+                "Auto-apply requires the dedicated authenticated JobHunter browser, "
+                "but it is not configured (browser_use_dedicated_profile=False). "
+                "Refusing to run on a copied or logged-out profile."
+            )
         return self._launch_copied_profile()
 
     def ensure_connected(self) -> BrowserContext:
@@ -728,8 +760,13 @@ def is_logged_in(page: Page, logged_in_selector: str) -> bool:
     return wait_for(page, logged_in_selector, timeout_ms=3000)
 
 
-def build_session(settings) -> BrowserSession:
-    """Construct a BrowserSession from a Settings object (shared by all helpers)."""
+def build_session(settings, allow_copied_fallback: bool = True) -> BrowserSession:
+    """Construct a BrowserSession from a Settings object (shared by all helpers).
+
+    ``allow_copied_fallback=False`` marks the session as auto-apply: ``start()``
+    then raises :class:`SessionSafetyError` instead of ever launching the legacy
+    copied-profile fallback.
+    """
     return BrowserSession(
         settings.browser_state_dir,
         settings.headless_browser,
@@ -740,6 +777,7 @@ def build_session(settings) -> BrowserSession:
         settings.browser_profile_dir,
         settings.browser_debug_port,
         settings.browser_use_dedicated_profile,
+        allow_copied_fallback=allow_copied_fallback,
     )
 
 

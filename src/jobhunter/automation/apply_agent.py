@@ -24,10 +24,11 @@ from typing import Any
 
 from jobhunter.agent import _default_llm
 from jobhunter.automation import strategies
+from jobhunter.automation.apply_contract import apply_portal_for, missing_apply_fields
 from jobhunter.automation.browser import BrowserSession, build_session, is_logged_in
 from jobhunter.automation.candidate import build_candidate
 from jobhunter.automation.evaluator import evaluate_job
-from jobhunter.automation.form_filler import fill_form
+from jobhunter.automation.form_filler import FillStats, fill_form
 from jobhunter.automation.prioritizer import sort_jobs_by_priority
 from jobhunter.automation.profile import profile_from_resume
 from jobhunter.automation.roles import priority_role_titles
@@ -40,6 +41,42 @@ from jobhunter.storage.history import load_applied_jobs, record_application_outc
 logger = logging.getLogger(__name__)
 
 StatusCallback = Callable[[str, str, str], None]  # (level, stage, message)
+
+# Deterministic markers of a confirmed submission (page text/URL). Only when one
+# of these appears may a job be recorded as "submitted".
+_SUBMIT_SUCCESS_MARKERS = (
+    "application submitted",
+    "application has been submitted",
+    "application received",
+    "application sent",
+    "your application has been sent",
+    "applied successfully",
+    "successfully applied",
+    "you have applied",
+    "submitted successfully",
+    "application complete",
+)
+
+# Confirmation-page URL fragments (aggressor-safe: specific to apply flows).
+_SUBMIT_SUCCESS_URL_MARKERS = (
+    "apply/success",
+    "application-success",
+    "applysuccess",
+    "jobapplied",
+)
+
+# Deterministic markers that a submit attempt failed (error/validation page).
+_SUBMIT_ERROR_MARKERS = (
+    "there was a problem",
+    "something went wrong",
+    "please try again",
+    "an error occurred",
+    "unable to submit",
+    "could not submit",
+    "application not submitted",
+    "failed to submit",
+    "error",
+)
 
 
 class ApplyAgent:
@@ -119,9 +156,25 @@ class ApplyAgent:
 
         results: list[dict] = []
         applied = load_applied_jobs(resume_text)
-        session = build_session(self.settings)
+        # Auto-apply runs only on the dedicated authenticated JobHunter session;
+        # the legacy copied-profile fallback is refused (SessionSafetyError) so a
+        # logged-out copy can never silently receive applications.
+        session = build_session(self.settings, allow_copied_fallback=False)
         try:
-            session.start()
+            try:
+                session.start()
+            except Exception as exc:
+                self._report(
+                    "error", "browser",
+                    f"Auto-apply blocked: the dedicated authenticated browser could "
+                    f"not be started ({exc}). No applications were submitted.",
+                )
+                logger.exception("Auto-apply session could not be established safely")
+                try:
+                    session.stop()
+                except Exception:
+                    pass
+                return {"results": [], "log": self._log, "mode": mode, "error": str(exc)}
             if session.using_cdp and session.using_dedicated_profile:
                 if session.reused_existing:
                     self._report(
@@ -261,6 +314,15 @@ class ApplyAgent:
             job_id = job.get("id") or ""
             if job_id in applied or job.get("url") in applied:
                 self._report("info", portal, f"Skipping already-applied {job.get('title', '?')} @ {job.get('company', '?')}")
+                continue
+
+            ok, reason = self._should_attempt_apply(portal, job)
+            if not ok:
+                self._report("warning", portal, f"SKIP {job.get('title', '?')} — {reason}")
+                self._record_outcome(resume_text, job, {
+                    "status": "needs_review",
+                    "detail": reason,
+                })
                 continue
 
             if self.settings.fresher_only:
@@ -412,11 +474,9 @@ class ApplyAgent:
                 "filled_fields": stats,
             }
         else:
-            submitted = self._submit_and_advance(form_page, profile, resume_pdf)
-            if submitted:
-                result = {**base, "status": "submitted", "detail": "Application submitted automatically.", "filled_fields": stats}
-            else:
-                result = {**base, "status": "needs_review", "detail": "Form filled; submit button not found — complete manually.", "filled_fields": stats}
+            clicked = self._submit_and_advance(form_page, profile, resume_pdf)
+            verified = _verify_submission(form_page) if clicked else "unknown"
+            result = self._submit_outcome(base, stats, clicked, verified)
 
         try:
             session.close_page(form_page)
@@ -468,12 +528,70 @@ class ApplyAgent:
             "detail": f"Browser crashed during application: {last_error or 'unknown error'}",
         }
 
+    @staticmethod
+    def _submit_outcome(base: dict, stats: FillStats, clicked: bool, verified: str) -> dict:
+        """Map a submit attempt + verification to an honest outcome.
+
+        Only ``clicked`` + ``verified == "submitted"`` records the application
+        as submitted. A clicked submit whose success cannot be confirmed is
+        ``needs_review``; a submit that hit an error/obstacle is ``failed``.
+        """
+        if not clicked:
+            return {
+                **base, "status": "needs_review",
+                "detail": "Form filled; submit button not found — complete manually.",
+                "filled_fields": stats,
+            }
+        if verified == "submitted":
+            return {
+                **base, "status": "submitted",
+                "detail": "Application submitted and confirmed.",
+                "filled_fields": stats,
+            }
+        if verified == "failed":
+            return {
+                **base, "status": "failed",
+                "detail": "Submit clicked but the page reported an error or verification "
+                          "obstacle — no submission recorded.",
+                "filled_fields": stats,
+            }
+        return {
+            **base, "status": "needs_review",
+            "detail": "Submit clicked but success could not be verified — confirm "
+                      "manually in the browser window.",
+            "filled_fields": stats,
+        }
+
     def _record_outcome(self, resume_text: str, job: dict, outcome: dict) -> None:
         """Persist a non-submitted outcome without marking the job as applied."""
         try:
             record_application_outcome(resume_text, job, outcome)
         except Exception as exc:
             logger.warning("Failed to record outcome: %s", exc)
+
+    @staticmethod
+    def _should_attempt_apply(portal: str, job: dict) -> tuple[bool, str]:
+        """Return ``(ok, reason)``; ``False`` means the job must never be applied.
+
+        Deterministic routing: a job is auto-applied only when its own
+        source/portal is a supported apply portal. Discovery-only jobs and jobs
+        from unsupported sources are refused here — they are never routed to
+        another portal's application strategy.
+        """
+        if job.get("discovery_only"):
+            return False, "Discovery-only source — never auto-applied."
+        route = apply_portal_for(job)
+        if route != portal:
+            source = job.get("source") or job.get("portal") or "?"
+            return (
+                False,
+                f"Source {source!r} has no automated application strategy for "
+                f"portal {portal!r} — refusing to fall through.",
+            )
+        missing = missing_apply_fields(job)
+        if missing:
+            return False, f"Job missing required fields: {', '.join(missing)}."
+        return True, ""
 
     def _click_apply_capture_popup(self, session: BrowserSession, page) -> tuple[bool, Any]:
         """Click Apply, returning ``(clicked, form_page)``.
@@ -533,6 +651,11 @@ class ApplyAgent:
     # ------------------------------------------------------------------ support
     def _ensure_login(self, page, portal: str) -> bool:
         selectors = strategies.login_selector(portal)
+        if portal not in strategies.PORTALS:
+            # Unsupported sources never reach a login flow: refusing keeps them
+            # from silently falling through to another portal's strategy.
+            self._report("error", portal, f"No login/apply strategy for portal {portal!r} — skipped")
+            return False
         login_url = strategies.PORTALS[portal]["login_url"]
         login_markers = ("login", "auth", "signin")
 
@@ -756,6 +879,45 @@ def _visible_controls(page) -> frozenset[str]:
             except Exception:
                 continue
     return frozenset(keys)
+
+
+def _verify_submission(form_page) -> str:
+    """Deterministically verify the outcome after a submit click.
+
+    Returns one of:
+
+    - ``"submitted"`` — a success marker is present (text/URL). Only this may
+      record the job as applied.
+    - ``"failed"`` — an error marker or a bot-verification obstacle is present.
+    - ``"unknown"`` — neither; the caller must NOT record ``submitted``.
+
+    Never reads cookies or session values; it only inspects the visible page
+    text and URL.
+    """
+    try:
+        form_page.wait_for_timeout(2500)
+    except Exception:
+        return "unknown"
+    url = ""
+    text = ""
+    try:
+        url = (form_page.url or "").lower()
+        text = (form_page.inner_text("body") or "")[:8000].lower()
+    except Exception:
+        return "unknown"
+    if any(marker in url for marker in _SUBMIT_SUCCESS_URL_MARKERS):
+        return "submitted"
+    combined = f"{url} {text}"
+    if any(marker in combined for marker in _SUBMIT_SUCCESS_MARKERS):
+        return "submitted"
+    obstacle: str | None = None
+    try:
+        obstacle = strategies.detect_obstacle(form_page.url, (form_page.inner_text("body") or "")[:4000])
+    except Exception:
+        pass
+    if obstacle or any(marker in combined for marker in _SUBMIT_ERROR_MARKERS):
+        return "failed"
+    return "unknown"
 
 
 def _now_iso() -> str:

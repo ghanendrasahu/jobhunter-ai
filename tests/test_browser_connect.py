@@ -5,7 +5,7 @@ import json
 import pytest
 
 import jobhunter.automation.browser as browser_mod
-from jobhunter.automation.browser import BrowserSession, launch_dedicated_browser
+from jobhunter.automation.browser import BrowserSession, SessionSafetyError, launch_dedicated_browser
 from jobhunter.config import Settings
 
 
@@ -177,6 +177,48 @@ def test_start_falls_back_to_copied_profile_on_dedicated_failure(monkeypatch, tm
     monkeypatch.setattr(BrowserSession, "_launch_copied_profile", lambda self: fake_context)
     monkeypatch.setattr(browser_mod, "sync_playwright", lambda: type("PW", (), {"start": lambda self: None})())
 
+    assert session.start() is fake_context
+
+
+def test_start_refuses_copied_fallback_for_auto_apply(monkeypatch, tmp_path):
+    session = _session(tmp_path, cdp_url="", allow_copied_fallback=False)
+    fallback_called = {"n": 0}
+
+    def boom_connect(self):
+        raise RuntimeError("no chrome found")
+
+    monkeypatch.setattr(BrowserSession, "ensure_connected", boom_connect)
+    monkeypatch.setattr(BrowserSession, "_launch_copied_profile", lambda self: fallback_called.update(n=fallback_called["n"] + 1))
+    monkeypatch.setattr(browser_mod, "sync_playwright", lambda: type("PW", (), {"start": lambda self: None})())
+
+    with pytest.raises(SessionSafetyError):
+        session.start()
+    assert fallback_called["n"] == 0  # copied-profile fallback must never run
+
+
+def test_start_refuses_copied_fallback_when_dedicated_disabled(monkeypatch, tmp_path):
+    session = BrowserSession(
+        tmp_path / "state",
+        profile_dir=tmp_path / "automation_profile",
+        debug_port=9222,
+        use_dedicated_profile=False,
+        allow_copied_fallback=False,
+    )
+    fallback_called = {"n": 0}
+
+    monkeypatch.setattr(BrowserSession, "_launch_copied_profile", lambda self: fallback_called.update(n=fallback_called["n"] + 1))
+    monkeypatch.setattr(browser_mod, "sync_playwright", lambda: type("PW", (), {"start": lambda self: None})())
+
+    with pytest.raises(SessionSafetyError):
+        session.start()
+    assert fallback_called["n"] == 0
+
+
+def test_start_cdp_attach_is_allowed_without_fallback(monkeypatch, tmp_path):
+    session = _session(tmp_path, cdp_url="http://127.0.0.1:9222", allow_copied_fallback=False)
+    fake_context = object()
+    monkeypatch.setattr(BrowserSession, "_attach_cdp", lambda self, url: fake_context)
+    monkeypatch.setattr(browser_mod, "sync_playwright", lambda: type("PW", (), {"start": lambda self: None})())
     assert session.start() is fake_context
 
 
