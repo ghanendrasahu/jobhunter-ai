@@ -84,8 +84,8 @@ def schedule(
         else:
             jobs = result.get("jobs", [])
             apps = result.get("applications", [])
-            submitted = sum(1 for a in apps if a.get("status") == "applied")
-            print(f"  ✓ {len(jobs)} jobs found, {submitted} applications recorded", flush=True)
+            submitted = sum(1 for a in apps if a.get("status") in ("applied", "submitted"))
+            print(f"  ✓ {len(jobs)} jobs found, {len(apps)} recorded ({submitted} actually submitted)", flush=True)
             if result.get("error"):
                 print(f"  ⚠ Pipeline error: {result['error']}", flush=True)
             try:

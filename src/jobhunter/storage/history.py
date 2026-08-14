@@ -298,6 +298,27 @@ def save_applied_jobs(resume_text: str, job_ids: list[str], job_details: list[di
     save_history(resume_id_from_text(resume_text), set(job_ids), job_details or [])
 
 
+def record_application_outcome(resume_text: str, job: dict, outcome: dict) -> None:
+    """Persist a non-submitted application attempt (failed/blocked/needs_review/opened).
+
+    Unlike :func:`save_applied_jobs`, the job id is NOT added to the applied
+    set, so the job remains eligible to be (re)submitted on a later run.
+    Entries are deduplicated by URL.
+    """
+    detail = {
+        "job_id": outcome.get("job_id") or job.get("id", "unknown"),
+        "title": job.get("title"),
+        "company": job.get("company"),
+        "source": job.get("source", job.get("portal")),
+        "url": job.get("url", ""),
+        "match_score": outcome.get("evaluation", {}).get("score"),
+        "status": outcome.get("status", "unknown"),
+        "detail": outcome.get("detail", ""),
+        "applied_at": datetime.now().isoformat(),
+    }
+    save_history(resume_id_from_text(resume_text), set(), [detail])
+
+
 def get_application_history(resume_text: str) -> dict:
     """Return the application history dict for a resume."""
     return get_history_by_resume_id(resume_id_from_text(resume_text))
@@ -356,7 +377,7 @@ def export_history_csv(resume_text: str | None = None) -> str:
                 job.get("source", ""),
                 job.get("url", ""),
                 job.get("applied_at", ""),
-                "applied",
+                job.get("status", "applied"),
             ])
         for jid in history.get("applied_job_ids", []):
             if not any(job.get("job_id") == jid for job in history.get("applied_jobs", [])):
@@ -368,13 +389,33 @@ def export_history_csv(resume_text: str | None = None) -> str:
 # ---------------------------------------------------------------------------
 # Application recording
 # ---------------------------------------------------------------------------
-def apply_to_job(job: dict, resume_text: str) -> dict:
-    """Record an application for a job, skipping ids already applied to.
+_SUBMITTED_STATUSES = ("applied", "submitted")
 
-    Portal search links are opened in the user's browser.
+
+def _already_submitted(resume_text: str, job: dict) -> bool:
+    """Return True when this job was genuinely submitted for this resume."""
+    job_id = job.get("id", "unknown")
+    history_data = load_history(resume_id_from_text(resume_text))
+    if job_id in history_data.get("applied_job_ids", []):
+        return True
+    url = job.get("url", "")
+    if url:
+        for detail in history_data.get("applied_jobs", []):
+            if detail.get("url") == url and detail.get("status") in _SUBMITTED_STATUSES:
+                return True
+    return False
+
+
+def apply_to_job(job: dict, resume_text: str) -> dict:
+    """Record a discovered job honestly — Pipeline A does not actually apply.
+
+    Portal search links are opened in the user's browser and marked ``opened``;
+    scraped listings are marked ``recorded``. Neither is counted as an
+    application (that is the apply agent's job). Jobs already genuinely
+    submitted for this resume are skipped as ``already_applied``.
     """
     job_id = job.get("id", "unknown")
-    if job_id in load_applied_jobs(resume_text):
+    if _already_submitted(resume_text, job):
         return {
             "job_id": job_id,
             "job_title": job.get("title"),
@@ -392,22 +433,21 @@ def apply_to_job(job: dict, resume_text: str) -> dict:
         except Exception as exc:  # pragma: no cover - browser dependent
             logger.warning("Failed to open browser: %s", exc)
 
-    save_applied_jobs(resume_text, [job_id], [{
-        "job_id": job_id,
-        "title": job.get("title"),
-        "company": job.get("company"),
-        "source": job.get("source"),
-        "url": url,
-        "match_score": job.get("match_score"),
-        "applied_at": datetime.now().isoformat(),
-    }])
+    status = "opened" if is_portal else "recorded"
+    detail = "🔗 Portal link opened in your browser — apply manually." if is_portal else "Job recorded — open the link to apply manually."
 
-    detail = "🔗 Portal opened in your browser." if is_portal else "Application recorded."
+    record_application_outcome(resume_text, job, {
+        "job_id": job_id,
+        "status": status,
+        "detail": detail,
+        "evaluation": {"score": job.get("match_score")},
+    })
+
     return {
         "job_id": job_id,
         "job_title": job.get("title"),
         "company": job.get("company"),
-        "status": "applied",
+        "status": status,
         "detail": detail,
         "match_score": job.get("match_score"),
     }

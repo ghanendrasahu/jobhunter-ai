@@ -88,19 +88,64 @@ def test_delete_resume_removes_files(monkeypatch, tmp_path: Path):
     assert not (tmp_path / "history" / f"{rid}.json").exists()
 
 
-def test_apply_to_job_records_and_skips_duplicates(monkeypatch, tmp_path: Path):
+def test_apply_to_job_records_honest_statuses(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(history, "HISTORY_DIR", tmp_path / "history")
     monkeypatch.setattr(history, "RESUMES_DIR", tmp_path / "resumes")
     monkeypatch.setattr(history, "webbrowser", _FakeBrowser())
 
     resume = "Python Engineer"
-    job = {"id": "job-9", "title": "Backend Dev", "company": "Acme", "url": "https://x.com/9", "source": "indeed"}
+    scraped = {"id": "job-9", "title": "Backend Dev", "company": "Acme",
+               "url": "https://x.com/9", "source": "indeed"}
+    portal = {**scraped, "id": "job-10", "url": "https://x.com/10", "is_portal_link": True}
 
-    first = apply_to_job(job, resume)
-    second = apply_to_job(job, resume)
+    scraped_result = apply_to_job(scraped, resume)
+    portal_result = apply_to_job(portal, resume)
 
-    assert first["status"] == "applied"
-    assert second["status"] == "already_applied"
+    # Pipeline A never claims to have applied: portal links are 'opened', scraped are 'recorded'.
+    assert scraped_result["status"] == "recorded"
+    assert portal_result["status"] == "opened"
+    assert load_applied_jobs(resume) == set()
+
+
+def test_apply_to_job_skips_previously_submitted(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(history, "HISTORY_DIR", tmp_path / "history")
+    monkeypatch.setattr(history, "RESUMES_DIR", tmp_path / "resumes")
+
+    resume = "Python Engineer"
+    save_applied_jobs(resume, ["job-9"], [
+        {"job_id": "job-9", "url": "https://x.com/9", "status": "submitted"},
+    ])
+    job = {"id": "job-9", "title": "Backend Dev", "company": "Acme",
+           "url": "https://x.com/9", "source": "indeed"}
+
+    assert apply_to_job(job, resume)["status"] == "already_applied"
+
+
+def test_record_application_outcome_does_not_mark_applied(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(history, "HISTORY_DIR", tmp_path / "history")
+    monkeypatch.setattr(history, "RESUMES_DIR", tmp_path / "resumes")
+
+    job = {"id": "job-11", "title": "Dev", "company": "Acme",
+           "url": "https://x.com/11", "source": "naukri"}
+    history.record_application_outcome("Resume", job, {"job_id": "job-11", "status": "needs_review"})
+
+    assert load_applied_jobs("Resume") == set()
+    data = get_application_history("Resume")
+    assert data["applied_jobs"][0]["status"] == "needs_review"
+
+
+def test_record_handed_off_does_not_mark_applied(monkeypatch, tmp_path: Path):
+    """PHASE 0 regression: a handed-off form must stay eligible for retry."""
+    monkeypatch.setattr(history, "HISTORY_DIR", tmp_path / "history")
+    monkeypatch.setattr(history, "RESUMES_DIR", tmp_path / "resumes")
+
+    job = {"id": "job-12", "title": "ML Engineer", "company": "Acme",
+           "url": "https://x.com/12", "source": "indeed"}
+    history.record_application_outcome("Resume", job, {"job_id": "job-12", "status": "handed_off"})
+
+    assert load_applied_jobs("Resume") == set()
+    data = get_application_history("Resume")
+    assert data["applied_jobs"][0]["status"] == "handed_off"
 
 
 class _FakeBrowser:
