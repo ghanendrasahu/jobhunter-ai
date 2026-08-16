@@ -124,6 +124,12 @@ class Settings(BaseSettings):
     # Max number of full-description pages fetched per search.
     fetch_full_description_max: int = 5
 
+    # Runtime performance tuning
+    # Max planned queries searched concurrently (browser-heavy sources: keep low).
+    search_max_concurrency: int = 2
+    # Max threads used to run LLM relevance refinement in parallel.
+    score_max_workers: int = 4
+
     # Runtime paths and limits
     upload_dir: Path = PROJECT_ROOT / "uploads"
     history_dir: Path = PROJECT_ROOT / "history"

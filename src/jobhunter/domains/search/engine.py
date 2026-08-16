@@ -38,6 +38,9 @@ def _wrap(jobs: list[Job]) -> list[dict]:
     return [job.to_dict() for job in jobs]
 
 
+_API_SOURCES = (search_adzuna_jobs, search_jooble_jobs, search_jsearch_jobs)
+
+
 async def _search_sources_async(query: str, location: str = "India") -> list[Job]:
     """Search every registered source plus the optional API sources for one query.
 
@@ -58,11 +61,17 @@ async def _search_sources_async(query: str, location: str = "India") -> list[Job
                 all_jobs.extend(Job.from_dict(job) for job in result)
             logger.info("Scraped %d jobs", len(result))
 
-    for api_fn in (search_adzuna_jobs, search_jooble_jobs, search_jsearch_jobs):
-        try:
-            all_jobs.extend(Job.from_dict(job) for job in api_fn(query))
-        except Exception as exc:
-            logger.warning("API source %s failed: %s", getattr(api_fn, "__name__", api_fn), exc)
+    # Third-party APIs block on the network; run them off the event loop and
+    # concurrently instead of serially so slow hosts don't stack up.
+    api_results = await asyncio.gather(
+        *[asyncio.to_thread(api_fn, query) for api_fn in _API_SOURCES],
+        return_exceptions=True,
+    )
+    for api_fn, api_result in zip(_API_SOURCES, api_results, strict=True):
+        if isinstance(api_result, BaseException):
+            logger.warning("API source %s failed: %s", getattr(api_fn, "__name__", api_fn), api_result)
+        elif api_result:
+            all_jobs.extend(Job.from_dict(job) for job in api_result)
     return all_jobs
 
 
@@ -104,12 +113,24 @@ async def search_plan_jobs_async(plan) -> list[dict]:
     """Run every ``(query, location)`` in ``plan`` and deduplicate the combined results.
 
     Portal links are emitted once from the plan's base query so repeated queries
-    never multiply search-page links.
+    never multiply search-page links. Planned queries are searched concurrently
+    (bounded by ``search_max_concurrency``); browser-heavy sources make full
+    fan-out impractical, so the bound keeps resource usage predictable.
     """
     all_jobs: list[Job] = [Job.from_dict(job) for job in build_portal_urls(plan.base_query)]
 
-    for search in plan.deduplicated_queries:
-        all_jobs.extend(await _search_sources_async(search.query, location=search.location))
+    queries = plan.deduplicated_queries
+    if queries:
+        concurrency = max(1, get_settings().search_max_concurrency)
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async def _search_one(search) -> list[Job]:
+            async with semaphore:
+                return await _search_sources_async(search.query, location=search.location)
+
+        batches = await asyncio.gather(*(_search_one(search) for search in queries))
+        for batch in batches:
+            all_jobs.extend(batch)
 
     all_jobs = dedupe_jobs(all_jobs)
     _refresh_descriptions(all_jobs)

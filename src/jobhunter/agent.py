@@ -202,7 +202,13 @@ def assess_eligibility(state: JobHunterState) -> JobHunterState:
 
 
 def _make_score_jobs(llm: ChatOpenAI):
-    """Build the relevance-scoring node; only eligibility-cleared jobs are scored."""
+    """Build the relevance-scoring node; only eligibility-cleared jobs are scored.
+
+    The deterministic subscore computation is cheap, but each eligible job may
+    trigger an LLM refinement call. Those calls are run concurrently (bounded by
+    ``score_max_workers``) so a batch of jobs finishes in roughly one LLM
+    round-trip instead of ``len(eligible)`` of them.
+    """
 
     def score(state: JobHunterState) -> JobHunterState:
         if state.get("error"):
@@ -214,18 +220,29 @@ def _make_score_jobs(llm: ChatOpenAI):
         skipped: list[dict[str, Any]] = []
         for job in jobs:
             if job.get("eligibility_decision") == "apply":
-                result = score_relevance(job, candidate=candidate, resume_text=resume, llm=llm)
-                job["match_score"] = result.overall
-                job["relevance_score"] = result.overall
-                job["relevance_decision"] = result.decision
-                job["relevance_components"] = [c.to_dict() for c in result.components]
-                job["relevance_explanation"] = result.explanation
-                if result.semantic_score is not None:
-                    job["semantic_score"] = result.semantic_score
-                    job["semantic_reason"] = result.semantic_reason
                 eligible.append(job)
             else:
                 skipped.append(job)
+
+        if eligible:
+            from concurrent.futures import ThreadPoolExecutor
+
+            def _score_one(job: dict[str, Any]):
+                return score_relevance(job, candidate=candidate, resume_text=resume, llm=llm)
+
+            workers = min(len(eligible), max(1, get_settings().score_max_workers))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                scored = pool.map(_score_one, eligible)
+                for job, result in zip(eligible, scored, strict=True):
+                    job["match_score"] = result.overall
+                    job["relevance_score"] = result.overall
+                    job["relevance_decision"] = result.decision
+                    job["relevance_components"] = [c.to_dict() for c in result.components]
+                    job["relevance_explanation"] = result.explanation
+                    if result.semantic_score is not None:
+                        job["semantic_score"] = result.semantic_score
+                        job["semantic_reason"] = result.semantic_reason
+
         eligible.sort(key=lambda j: j.get("match_score", 0), reverse=True)
         logger.info(
             "Scored %d/%d jobs (hard gate skipped %d)",

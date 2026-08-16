@@ -148,6 +148,19 @@ def fetch_full_description(url: str, session=None, timeout: int = 12) -> str:
     return ""
 
 
+def _refresh_job(job, session, min_chars: int) -> int:
+    """Fetch and swap in a full description for one job; 1 when refreshed."""
+    html = fetch_full_description(job.url, session=session)
+    if not html:
+        return 0
+    description = extract_description(html)
+    if len(description) < min_chars:
+        return 0
+    job.description = description
+    job.description_truncated = False
+    return 1
+
+
 def ensure_full_descriptions(
     jobs,
     session=None,
@@ -160,22 +173,32 @@ def ensure_full_descriptions(
     mutated in place: the job's ``description`` is replaced with the fetched
     text and ``description_truncated`` flips to ``False``. At most
     ``max_fetches`` pages are downloaded. Returns how many jobs were refreshed.
+
+    Fetches run concurrently (bounded) for the common no-session path; a caller
+    that passes a shared ``session`` falls back to sequential fetches because
+    ``requests.Session`` is not thread-safe.
     """
-    fetched = 0
+    candidates: list = []
     for job in jobs:
-        if fetched >= max_fetches:
+        if len(candidates) >= max_fetches:
             break
         if not job.url or snippet_sufficient(job.description, min_chars=min_chars):
             continue
-        html = fetch_full_description(job.url, session=session)
-        if not html:
-            continue
-        description = extract_description(html)
-        if len(description) < min_chars:
-            continue
-        job.description = description
-        job.description_truncated = False
-        fetched += 1
+        candidates.append(job)
+    if not candidates:
+        return 0
+
+    if session is not None:
+        fetched = 0
+        for job in candidates:
+            fetched += _refresh_job(job, session, min_chars)
+        return fetched
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    workers = min(len(candidates), 6)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        fetched = sum(pool.map(lambda job: _refresh_job(job, None, min_chars), candidates))
     if fetched:
         logger.info("Refreshed full descriptions for %d jobs", fetched)
     return fetched

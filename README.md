@@ -30,7 +30,7 @@ dashboard**, a **FastAPI REST endpoint**, and a **CLI**.
 
 ## Architecture
 
-```
+```text
                 ┌───────────────────────────┐
                 │   Entry points            │
                 │  python -m jobhunter      │  CLI
@@ -68,7 +68,7 @@ the downstream nodes.
 
 ## Project structure
 
-```
+```text
 JobHunter AI/
 ├── src/
 │   └── jobhunter/             # Main package (src layout)
@@ -228,6 +228,7 @@ Or use the **🤖 Auto Apply** page in the Streamlit dashboard (a 3-step wizard)
    you press **Stop**. A live console shows each job being scored, filled and submitted.
 
 The agent:
+
 1. Reuses a persistent logged-in browser session (`data/browser_state/`), so you log into Naukri/Indeed once.
 2. Searches each portal for your selected roles, then **ranks every job** — fresher postings,
    fresher-friendly roles, remote/WFH work, higher salary, and tier-1 titles get priority.
@@ -240,6 +241,7 @@ The agent:
    and runs again until you press Stop.
 
 > **Two ways to use your account (both give you real confirmation emails):**
+>
 > 1. **`.env` credentials** — set `NAUKRI_EMAIL/NAUKRI_PASSWORD` (and/or
 >    `INDEED_EMAIL/INDEED_PASSWORD`). The agent logs in through the portal's own
 >    form (no Google sign-in, so Google never blocks it), applies from your
@@ -254,36 +256,38 @@ The agent:
 
 ## Configuration
 
-| Environment variable     | Required | Description                                      |
-|--------------------------|----------|--------------------------------------------------|
-| `OPENAI_API_KEY`         | No*      | Enables LLM query generation (keyword fallback otherwise) |
-| `OPENAI_MODEL`           | No       | Chat model used for query generation (`gpt-4o-mini`) |
-| `GROQ_API_KEY`           | No*      | Prefer Groq over OpenAI when set (OpenAI-compatible, free tier) |
-| `GROQ_MODEL`             | No       | Groq model used when `GROQ_API_KEY` is set (`llama-3.3-70b-versatile`) |
-| `GROQ_BASE_URL`          | No       | Groq endpoint (defaults to `https://api.groq.com/openai/v1`) |
-| `ADZUNA_APP_ID`          | No       | Adzuna API app ID (live job search)              |
-| `ADZUNA_API_KEY`         | No       | Adzuna API key                                   |
-| `JOOBLE_API_KEY`         | No       | Jooble API key                                   |
-| `SMTP_HOST` / `SMTP_PORT`| No       | SMTP settings for email alerts                   |
-| `SMTP_USER` / `SMTP_PASS`| No       | SMTP credentials (use an app password for Gmail) |
-| `NOTIFICATION_EMAIL`     | No       | Recipient for pipeline reports                   |
-| `JOBHUNTER_API_KEY`      | No       | If set, REST clients must send `X-API-Key` header|
-| `API_RATE_LIMIT`         | No       | FastAPI rate limit (default `20/minute`)         |
-| `MAX_FILE_SIZE_MB`       | No       | Max PDF upload size (default `10`)               |
-| `NAUKRI_EMAIL` / `NAUKRI_PASSWORD` | No | Naukri login for the apply agent (optional — manual login in browser window) |
-| `INDEED_EMAIL` / `INDEED_PASSWORD` | No | Indeed login for the apply agent (optional — manual login in browser window) |
-| `AUTO_APPLY_MODE`        | No       | `human` (pre-fill, user submits), `auto`, `off` (default `human`) |
-| `MAX_APPLICATIONS_PER_RUN` | No     | Cap per run (default `5`)                        |
-| `HEADLESS_BROWSER`       | No       | Run the browser hidden (default `false`)         |
-| `BROWSER_CHANNEL`        | No       | `chrome` (installed Chrome, default) or `chromium` (bundled) |
-| `BROWSER_USE_DEFAULT_PROFILE` | No | Reuse your default Chrome logins via an auto-refreshed minimal profile copy (default `true`) |
-| `BROWSER_USER_DATA_DIR`  | No       | Explicit Chrome 'User Data' dir (auto-detected when empty) |
-| `MANUAL_LOGIN_TIMEOUT`   | No       | Seconds to wait for manual login (default `180`) |
-| `FRESHER_ONLY`           | No       | Fresher-only mode: augments the query, skips senior roles (default `true`) |
-| `MAX_EXPERIENCE_YEARS`   | No       | Jobs requiring more years than this are skipped (default `2`) |
-| `BATCH_SIZE`             | No       | Applications per continuous-mode cycle (default `10`)         |
-| `COOLDOWN_SECONDS`       | No       | Pause between continuous-mode cycles (default `300`)          |
-| `PRIORITIZE_REMOTE`      | No       | Give remote/WFH jobs a score boost (default `true`)           |
+| Environment variable               | Required   | Description                                                                                  |
+| ---------------------------------- | ---------- | -------------------------------------------------------------------------------------------- |
+| `OPENAI_API_KEY`                   | No*        | Enables LLM query generation (keyword fallback otherwise)                                    |
+| `OPENAI_MODEL`                     | No         | Chat model used for query generation (`gpt-4o-mini`)                                         |
+| `GROQ_API_KEY`                     | No*        | Prefer Groq over OpenAI when set (OpenAI-compatible, free tier)                              |
+| `GROQ_MODEL`                       | No         | Groq model used when `GROQ_API_KEY` is set (`llama-3.3-70b-versatile`)                       |
+| `GROQ_BASE_URL`                    | No         | Groq endpoint (defaults to `https://api.groq.com/openai/v1`)                                 |
+| `ADZUNA_APP_ID`                    | No         | Adzuna API app ID (live job search)                                                          |
+| `ADZUNA_API_KEY`                   | No         | Adzuna API key                                                                               |
+| `JOOBLE_API_KEY`                   | No         | Jooble API key                                                                               |
+| `SMTP_HOST` / `SMTP_PORT`          | No         | SMTP settings for email alerts                                                               |
+| `SMTP_USER` / `SMTP_PASS`          | No         | SMTP credentials (use an app password for Gmail)                                             |
+| `NOTIFICATION_EMAIL`               | No         | Recipient for pipeline reports                                                               |
+| `JOBHUNTER_API_KEY`                | No         | If set, REST clients must send `X-API-Key` header                                            |
+| `API_RATE_LIMIT`                   | No         | FastAPI rate limit (default `20/minute`)                                                     |
+| `MAX_FILE_SIZE_MB`                 | No         | Max PDF upload size (default `10`)                                                           |
+| `NAUKRI_EMAIL` / `NAUKRI_PASSWORD` | No         | Naukri login for the apply agent (optional — manual login in browser window)                 |
+| `INDEED_EMAIL` / `INDEED_PASSWORD` | No         | Indeed login for the apply agent (optional — manual login in browser window)                 |
+| `AUTO_APPLY_MODE`                  | No         | `human` (pre-fill, user submits), `auto`, `off` (default `human`)                            |
+| `MAX_APPLICATIONS_PER_RUN`         | No         | Cap per run (default `5`)                                                                    |
+| `HEADLESS_BROWSER`                 | No         | Run the browser hidden (default `false`)                                                     |
+| `BROWSER_CHANNEL`                  | No         | `chrome` (installed Chrome, default) or `chromium` (bundled)                                 |
+| `BROWSER_USE_DEFAULT_PROFILE`      | No         | Reuse your default Chrome logins via an auto-refreshed minimal profile copy (default `true`) |
+| `BROWSER_USER_DATA_DIR`            | No         | Explicit Chrome 'User Data' dir (auto-detected when empty)                                   |
+| `MANUAL_LOGIN_TIMEOUT`             | No         | Seconds to wait for manual login (default `180`)                                             |
+| `FRESHER_ONLY`                     | No         | Fresher-only mode: augments the query, skips senior roles (default `true`)                   |
+| `MAX_EXPERIENCE_YEARS`             | No         | Jobs requiring more years than this are skipped (default `2`)                                |
+| `BATCH_SIZE`                       | No         | Applications per continuous-mode cycle (default `10`)                                        |
+| `COOLDOWN_SECONDS`                 | No         | Pause between continuous-mode cycles (default `300`)                                         |
+| `PRIORITIZE_REMOTE`                | No         | Give remote/WFH jobs a score boost (default `true`)                                          |
+| `SEARCH_MAX_CONCURRENCY`           | No         | Max planned queries searched in parallel (browser-heavy; default `2`)                        |
+| `SCORE_MAX_WORKERS`                | No         | Threads used for parallel LLM relevance scoring (default `4`)                                |
 
 \* *The pipeline works fully without an OpenAI key — query generation falls back to keyword extraction.*
 

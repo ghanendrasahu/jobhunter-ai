@@ -6,7 +6,6 @@ import os
 import queue
 import tempfile
 import threading
-import time
 from pathlib import Path
 
 import pandas as pd
@@ -42,6 +41,21 @@ from jobhunter.storage.profiles import (
 from jobhunter.ui.components import render_results
 
 MAX_UPLOAD_MB = 10
+
+
+@st.cache_data(show_spinner=False)
+def _resume_text_cached(path: str, mtime: float, size: int) -> str:
+    """Extract resume text, cached by file identity so reruns never re-parse."""
+    return extract_text_from_pdf(path)
+
+
+def _extract_resume_text(path: str) -> str:
+    """Extract resume text, using the mtime/size-keyed cache for stable paths."""
+    try:
+        stat = os.stat(path)
+        return _resume_text_cached(path, stat.st_mtime, stat.st_size)
+    except OSError:
+        return extract_text_from_pdf(path)
 
 
 def job_search_page() -> None:
@@ -89,24 +103,9 @@ def job_search_page() -> None:
 
     if file_path and st.button("🚀 Run Job Hunter Pipeline", type="primary", use_container_width=True):
         with st.spinner("Running pipeline..."):
-            bar = st.progress(0, text="Extracting resume...")
             try:
-                steps = [
-                    (10, "Extracting text from PDF..."),
-                    (25, "Generating search query..."),
-                    (50, "Scraping Indeed, LinkedIn, Naukri..."),
-                    (70, "Scoring jobs against your resume..."),
-                    (90, "Recording applications..."),
-                    (100, "Done!"),
-                ]
-                for pct, msg in steps:
-                    time.sleep(0.3)
-                    bar.progress(pct, text=msg)
-
                 result = run_job_hunter(file_path)
-                bar.empty()
             except Exception as exc:
-                bar.empty()
                 st.error(f"Pipeline failed: {exc}")
                 st.stop()
             finally:
@@ -222,7 +221,7 @@ def auto_apply_page() -> None:
             names = {f"{r['name']} ({r['id'][:8]})": r for r in saved}
             selected = st.selectbox("Select saved resume", list(names.keys()), key="aa_saved")
             resume_pdf = names[selected]["file_path"]
-            resume_text = extract_text_from_pdf(resume_pdf)
+            resume_text = _extract_resume_text(resume_pdf)
         else:
             st.warning("No saved resumes. Upload one first.")
 
