@@ -4,6 +4,7 @@ __pycache__/
 .coverage
 htmlcov/
 .git/
+.github/
 .env
 history/
 resumes/
