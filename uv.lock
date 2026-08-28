@@ -412,7 +412,7 @@ dependencies = [
     { name = "uvicorn", extra = ["standard"] },
 ]
 
-[package.optional-dependencies]
+[package.dev-dependencies]
 dev = [
     { name = "mypy" },
     { name = "pytest" },
@@ -428,25 +428,28 @@ requires-dist = [
     { name = "langchain-core", specifier = "==1.5.4" },
     { name = "langchain-openai", specifier = "==1.4.3" },
     { name = "langgraph", specifier = "==1.2.11" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = "==2.1.0" },
     { name = "openai", specifier = "==2.54.0" },
     { name = "pandas", specifier = "==3.0.5" },
     { name = "playwright", specifier = "==1.62.0" },
     { name = "plotly", specifier = "==6.9.0" },
     { name = "pydantic-settings", specifier = "==2.14.1" },
     { name = "pypdf", specifier = "==6.15.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = "==9.0.3" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = "==1.4.0" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = "==7.1.0" },
     { name = "python-dotenv", specifier = "==1.0.1" },
     { name = "python-multipart", specifier = "==0.0.32" },
     { name = "requests", specifier = "==2.32.5" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = "==0.15.15" },
     { name = "slowapi", specifier = "==0.1.10" },
     { name = "streamlit", specifier = "==1.61.1" },
     { name = "uvicorn", extras = ["standard"], specifier = "==0.52.2" },
 ]
-provides-extras = ["dev"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "mypy", specifier = "==2.1.0" },
+    { name = "pytest", specifier = "==9.0.3" },
+    { name = "pytest-asyncio", specifier = "==1.4.0" },
+    { name = "pytest-cov", specifier = "==7.1.0" },
+    { name = "ruff", specifier = "==0.15.15" },
+]
 
 [[package]]
 name = "jsonpatch"
