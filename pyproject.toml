@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jobhunter-ai"
-version = "3.0.0"
+version = "1.0.0"
 description = "Resume-driven Indian job search, matching, and application tracking."
 readme = "README.md"
 requires-python = "~=3.11.0"
