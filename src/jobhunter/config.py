@@ -21,8 +21,7 @@ logger = logging.getLogger(__name__)
 _ENV_PATH = PROJECT_ROOT / ".env"
 if not _ENV_PATH.exists():
     logger.info(
-        "No .env file found. Copy .env.example to .env and fill in your "
-        "API keys for full functionality."
+        "No .env file found. Copy .env.example to .env and fill in your API keys for full functionality."
     )
 
 
@@ -62,6 +61,10 @@ class Settings(BaseSettings):
     # Optional API auth (FastAPI)
     jobhunter_api_key: str = ""
     api_rate_limit: str = "20/minute"
+    # Render (and most PaaS) front the app with a proxy, so request.client is
+    # the proxy. Rate-limit on the last X-Forwarded-For hop instead. Disable
+    # only when clients connect directly to this process.
+    trust_proxy_headers: bool = True
 
     # Comma-separated browser origins allowed to call this API via CORS.
     # Empty (default) = same-origin only: no CORS middleware is installed.
@@ -237,5 +240,6 @@ def warn_missing_keys(prefix: str = "JobHunter") -> None:
     logger.warning(
         "%s: no key configured for %s. AI query generation and some job "
         "sources are disabled; only keyword matching and scraping will run.",
-        prefix, ", ".join(missing),
+        prefix,
+        ", ".join(missing),
     )

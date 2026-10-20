@@ -1,6 +1,7 @@
 """FastAPI server exposing the JobHunter pipeline as a REST API."""
 
 import logging
+import secrets
 import uuid
 from contextlib import asynccontextmanager
 
@@ -40,7 +41,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     """
     settings = settings or get_settings()
     configure_logging(log_json=settings.log_json)
-    limiter = Limiter(key_func=get_remote_address)
+
+    def rate_limit_key(request: Request) -> str:
+        """Rate-limit by real client, not by the trusted proxy's address.
+
+        The last X-Forwarded-For entry is appended by the trusted proxy;
+        earlier entries are client-controlled.
+        """
+        if settings.trust_proxy_headers:
+            forwarded = request.headers.get("x-forwarded-for", "")
+            if forwarded:
+                candidate = forwarded.split(",")[-1].strip()
+                if candidate:
+                    return candidate
+        return get_remote_address(request)
+
+    limiter = Limiter(key_func=rate_limit_key)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -85,7 +101,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     async def verify_api_key(x_api_key: str | None = Header(None)) -> None:
         """Reject requests without a valid key when one is configured."""
-        if settings.jobhunter_api_key and x_api_key != settings.jobhunter_api_key:
+        if settings.jobhunter_api_key and not secrets.compare_digest(
+            x_api_key or "", settings.jobhunter_api_key
+        ):
             raise HTTPException(status_code=401, detail="Missing or invalid X-API-Key header")
 
     @app.post("/upload_resume", dependencies=[Depends(verify_api_key)])
@@ -95,6 +113,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         _validate_pdf(file)
 
         file_bytes = await file.read()
+        if not file_bytes.startswith(b"%PDF-"):
+            raise HTTPException(status_code=400, detail="File is not a valid PDF.")
         if len(file_bytes) > settings.max_upload_bytes:
             raise HTTPException(
                 status_code=413,
@@ -115,7 +135,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise
         except Exception as exc:
             logger.exception("Pipeline execution failed")
-            raise HTTPException(status_code=500, detail=f"Pipeline error: {exc}") from exc
+            raise HTTPException(status_code=500, detail="Pipeline failed. Please try again.") from exc
         finally:
             tmp_path.unlink(missing_ok=True)
 

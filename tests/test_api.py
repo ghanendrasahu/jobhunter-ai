@@ -20,11 +20,17 @@ PIPELINE_RESULT = {
 }
 
 
-def _app(api_key: str = "", rate_limit: str = "50/minute", cors_origins: str = "") -> TestClient:
+def _app(
+    api_key: str = "",
+    rate_limit: str = "50/minute",
+    cors_origins: str = "",
+    trust_proxy_headers: bool = True,
+) -> TestClient:
     settings = Settings(
         jobhunter_api_key=api_key,
         api_rate_limit=rate_limit,
         cors_origins=cors_origins,
+        trust_proxy_headers=trust_proxy_headers,
         openai_api_key="",
     )
     return TestClient(create_app(settings))
@@ -94,7 +100,49 @@ def test_rate_limiting():
     assert _upload(client).status_code == 429
 
 
+def test_rate_limit_uses_real_client_behind_proxy():
+    """The last X-Forwarded-For hop identifies the client, not the first."""
+    client = _app(rate_limit="2/minute")
+    headers_a = {"X-Forwarded-For": "spoof-one, 203.0.113.7"}
+    headers_b = {"X-Forwarded-For": "spoof-two, 203.0.113.7"}
+
+    assert _upload(client, headers=headers_a).status_code == 200
+    assert _upload(client, headers=headers_b).status_code == 200
+    assert _upload(client, headers=headers_a).status_code == 429
+    # A different real client still has its own bucket.
+    assert _upload(client, headers={"X-Forwarded-For": "x, 203.0.113.8"}).status_code == 200
+
+
+def test_rate_limit_ignores_proxy_header_when_disabled():
+    client = _app(rate_limit="2/minute", trust_proxy_headers=False)
+    assert _upload(client, headers={"X-Forwarded-For": "a, 203.0.113.1"}).status_code == 200
+    assert _upload(client, headers={"X-Forwarded-For": "b, 203.0.113.2"}).status_code == 200
+    assert _upload(client, headers={"X-Forwarded-For": "c, 203.0.113.3"}).status_code == 429
+
+
+def test_rejects_a_file_that_is_not_really_a_pdf():
+    client = _app()
+    response = _upload(client, content=b"not a pdf at all")
+    assert response.status_code == 400
+    assert "valid PDF" in response.json()["detail"]
+
+
+def test_pipeline_errors_are_not_leaked(monkeypatch):
+    from jobhunter.api import server
+
+    def boom(_path: str):
+        raise RuntimeError("provider-key-xyz")
+
+    monkeypatch.setattr(server, "run_job_hunter", boom)
+    client = _app()
+    response = _upload(client)
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Pipeline failed. Please try again."
+    assert "provider-key-xyz" not in response.text
+
+
 # --- CORS -------------------------------------------------------------------
+
 
 def test_cors_default_same_origin_only():
     """No CORS_ORIGINS configured -> no CORS middleware, browser preflight denied."""
@@ -120,6 +168,7 @@ def test_cors_wildcard_disables_credentials():
 
 
 # --- Readiness --------------------------------------------------------------
+
 
 def test_readiness_ready(client: TestClient):
     response = client.get("/ready")
