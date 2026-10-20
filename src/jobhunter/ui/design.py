@@ -20,6 +20,7 @@ Usage:
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 import streamlit as st
 
@@ -503,7 +504,12 @@ button[data-baseweb="tab"][aria-selected="true"] {{ color: var(--ui-text) !impor
 """
 
 
-def setup(page_title: str, *, icon: str | Path | None = None, layout: str = "wide") -> None:
+def setup(
+    page_title: str,
+    *,
+    icon: str | Path | None = None,
+    layout: Literal["centered", "wide"] = "wide",
+) -> None:
     """Configure the page and inject the shared theme. Call once, first."""
     icon_value: str | None = None
     if icon is not None:

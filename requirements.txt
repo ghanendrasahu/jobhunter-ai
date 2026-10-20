@@ -4,7 +4,7 @@
 # `jobhunter-web`), also run: pip install -e .
 #
 # Core ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â for CLI and pipeline
-pypdf==6.21.1
+pypdf==6.21.4
 requests==2.33.0
 python-dotenv==1.2.2
 python-multipart==0.0.32
