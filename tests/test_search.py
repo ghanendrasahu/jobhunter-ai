@@ -3,7 +3,7 @@
 import jobhunter.domains.search.engine as engine
 from jobhunter.domains.jobs import Job
 from jobhunter.domains.search.portals import build_portal_urls
-from jobhunter.domains.search.sources.base import active_sources as registered_sources
+from jobhunter.domains.search.sources.base import SOURCES
 
 
 def test_build_portal_urls_returns_links():
@@ -60,11 +60,14 @@ def _patch_search(monkeypatch, sources):
 
 
 def test_search_all_jobs_returns_portals_and_scraped(monkeypatch):
-    _patch_search(monkeypatch, [
-        _FakeSource([_job("1", "X", "C", "https://a.com/j1", "indeed")]),
-        _FakeSource([_job("2", "Y", "C", "https://a.com/j2", "linkedin")]),
-        _FakeSource([]),  # naukri finds nothing
-    ])
+    _patch_search(
+        monkeypatch,
+        [
+            _FakeSource([_job("1", "X", "C", "https://a.com/j1", "indeed")]),
+            _FakeSource([_job("2", "Y", "C", "https://a.com/j2", "linkedin")]),
+            _FakeSource([]),  # naukri finds nothing
+        ],
+    )
 
     jobs = engine.search_all_jobs("Python Developer")
     sources = {j["source"] for j in jobs}
@@ -75,11 +78,14 @@ def test_search_all_jobs_returns_portals_and_scraped(monkeypatch):
 
 
 def test_search_all_jobs_deduplicates_urls(monkeypatch):
-    _patch_search(monkeypatch, [
-        _FakeSource([_job("1", "X", "C", "https://a.com/j1", "indeed")]),
-        _FakeSource([_job("2", "Y", "C", "https://a.com/j2", "linkedin")]),
-        _FakeSource([_job("3", "Z", "C", "https://a.com/j1", "naukri")]),  # duplicate URL
-    ])
+    _patch_search(
+        monkeypatch,
+        [
+            _FakeSource([_job("1", "X", "C", "https://a.com/j1", "indeed")]),
+            _FakeSource([_job("2", "Y", "C", "https://a.com/j2", "linkedin")]),
+            _FakeSource([_job("3", "Z", "C", "https://a.com/j1", "naukri")]),  # duplicate URL
+        ],
+    )
 
     jobs = engine.search_all_jobs("Python Developer")
     urls = [j["url"] for j in jobs if not j.get("is_portal_link")]
@@ -88,15 +94,28 @@ def test_search_all_jobs_deduplicates_urls(monkeypatch):
 
 
 def test_search_all_jobs_deduplicates_company_title(monkeypatch):
-    _patch_search(monkeypatch, [
-        _FakeSource([_job("1", "X", "C", "https://a.com/j1", "indeed")]),
-        _FakeSource([_job("2", "Y", "C", "https://a.com/j2", "linkedin")]),
-        _FakeSource([]),
-    ])
+    _patch_search(
+        monkeypatch,
+        [
+            _FakeSource([_job("1", "X", "C", "https://a.com/j1", "indeed")]),
+            _FakeSource([_job("2", "Y", "C", "https://a.com/j2", "linkedin")]),
+            _FakeSource([]),
+        ],
+    )
     # Same company + title as the LinkedIn job, but a different URL.
-    monkeypatch.setattr(engine, "search_jsearch_jobs", lambda _q: [
-        {"id": "jsearch-1", "title": "Y", "company": "C", "url": "https://other.com/j2", "source": "jsearch"}
-    ])
+    monkeypatch.setattr(
+        engine,
+        "search_jsearch_jobs",
+        lambda _q: [
+            {
+                "id": "jsearch-1",
+                "title": "Y",
+                "company": "C",
+                "url": "https://other.com/j2",
+                "source": "jsearch",
+            }
+        ],
+    )
 
     jobs = engine.search_all_jobs("Python Developer")
     # 5 portal links + 2 scraped (LinkedIn "Y@C" dedupes the jsearch "Y@C").
@@ -107,9 +126,15 @@ def test_search_all_jobs_deduplicates_company_title(monkeypatch):
 
 def test_search_all_jobs_accepts_dict_sources(monkeypatch):
     """Legacy dict-returning sources are wrapped defensively into jobs."""
-    monkeypatch.setattr(engine, "active_sources", lambda: [
-        _FakeSource([{"id": "d1", "title": "D", "company": "C", "url": "https://a.com/d1", "source": "indeed"}])
-    ])
+    monkeypatch.setattr(
+        engine,
+        "active_sources",
+        lambda: [
+            _FakeSource(
+                [{"id": "d1", "title": "D", "company": "C", "url": "https://a.com/d1", "source": "indeed"}]
+            )
+        ],
+    )
     monkeypatch.setattr(engine, "search_adzuna_jobs", _noop)
     monkeypatch.setattr(engine, "search_jooble_jobs", _noop)
     monkeypatch.setattr(engine, "search_jsearch_jobs", _noop)
@@ -120,19 +145,22 @@ def test_search_all_jobs_accepts_dict_sources(monkeypatch):
 
 
 def test_search_all_jobs_tolerates_failing_source(monkeypatch):
-    _patch_search(monkeypatch, [
-        _FakeSource([], error=RuntimeError("portal down")),
-        _FakeSource([_job("2", "Y", "C", "https://a.com/j2", "linkedin")]),
-    ])
+    _patch_search(
+        monkeypatch,
+        [
+            _FakeSource([], error=RuntimeError("portal down")),
+            _FakeSource([_job("2", "Y", "C", "https://a.com/j2", "linkedin")]),
+        ],
+    )
 
     jobs = engine.search_all_jobs("Python Developer")
     assert len(jobs) == 6  # 5 portal links + 1 surviving source
 
 
 def test_registry_has_naukri_and_indeed():
-    names = {source.source_name for source in registered_sources()}
-    assert "naukri" in names
-    assert "indeed" in names
+    # Registration, not availability: active_sources() omits browser-backed
+    # sources when Chromium is missing (e.g. the CI runner).
+    assert {"naukri", "indeed"} <= set(SOURCES)
 
 
 def test_search_plan_jobs_emits_portal_links_once(monkeypatch):
@@ -143,10 +171,13 @@ def test_search_plan_jobs_emits_portal_links_once(monkeypatch):
     monkeypatch.setattr(engine, "search_jooble_jobs", _noop)
     monkeypatch.setattr(engine, "search_jsearch_jobs", _noop)
 
-    plan = SearchPlan(base_query="Python Developer", queries=[
-        SearchQuery("Python Developer", "primary", "India"),
-        SearchQuery("Python Developer", "primary", "Bengaluru"),
-    ])
+    plan = SearchPlan(
+        base_query="Python Developer",
+        queries=[
+            SearchQuery("Python Developer", "primary", "India"),
+            SearchQuery("Python Developer", "primary", "Bengaluru"),
+        ],
+    )
     jobs = engine.search_plan_jobs(plan)
     portal = [j for j in jobs if j.get("is_portal_link")]
     assert len(portal) == 5  # never multiplied across planned queries
@@ -164,10 +195,13 @@ def test_search_plan_jobs_dedupes_repeated_listings_across_queries(monkeypatch):
     monkeypatch.setattr(engine, "search_jooble_jobs", _noop)
     monkeypatch.setattr(engine, "search_jsearch_jobs", _noop)
 
-    plan = SearchPlan(base_query="Python Developer", queries=[
-        SearchQuery("Python Developer", "primary", "India"),
-        SearchQuery("Python Developer", "primary", "Bengaluru"),
-    ])
+    plan = SearchPlan(
+        base_query="Python Developer",
+        queries=[
+            SearchQuery("Python Developer", "primary", "India"),
+            SearchQuery("Python Developer", "primary", "Bengaluru"),
+        ],
+    )
     jobs = engine.search_plan_jobs(plan)
     non_portal = [j for j in jobs if not j.get("is_portal_link")]
     assert len(non_portal) == 1  # same posting deduped across both planned queries
