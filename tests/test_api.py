@@ -61,6 +61,15 @@ def test_health(client: TestClient):
     assert response.json()["status"] == "ok"
 
 
+def test_security_headers(client: TestClient):
+    response = client.get("/health")
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-frame-options"] == "DENY"
+    assert response.headers["referrer-policy"] == "strict-origin-when-cross-origin"
+    assert response.headers["permissions-policy"] == "camera=(), microphone=(), geolocation=()"
+    assert response.headers["strict-transport-security"].startswith("max-age=")
+
+
 def test_upload_success(client: TestClient):
     response = _upload(client)
     assert response.status_code == 200

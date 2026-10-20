@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Shared Streamlit design system for the deployed app fleet.
 
 One identity across every dashboard:
@@ -5,11 +6,16 @@ One identity across every dashboard:
   * 32/24/20/16/14/13 type scale, 1120px content cap
   * semantic colour tokens (success / warning / danger / neutral)
   * Lucide-style inline SVG icons instead of emoji
-  * Streamlit chrome (toolbar, Deploy button, menu, footer) removed
+  * Streamlit chrome (Deploy button, menu, footer) hidden; a slim header
+    keeps the sidebar toggle reachable
+
+Vendored copy: keep byte-identical across the fleet. Canonical source:
+``render-configs/fleet_ui.py``; sync and drift check with
+``render-configs/sync_fleet_ui.py``.
 
 Usage:
     import ui
-    ui.setup("Credit Risk", layout="wide")
+    ui.setup("Overview", layout="wide")
     ui.page_header("Credit Risk", "Estimate ...", eyebrow="Credit Risk Lab")
     ui.section("Applicant details", "...")
     ui.empty_state("No assessment yet", "Fill in the form ...")
@@ -41,9 +47,7 @@ DANGER = "#F17C7C"
 
 FONT = "Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif"
 
-FONT_IMPORT = (
-    "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');"
-)
+FONT_IMPORT = "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');"
 
 # ---------------------------------------------------------------------------
 # Icons (24x24, stroke = currentColor)
@@ -55,7 +59,8 @@ _ICONS: dict[str, str] = {
     "message": '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>',
     "search": '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
     "upload": (
-        '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5"/><path d="M12 3v12"/>'
+        '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>'
+        '<path d="m17 8-5-5-5 5"/><path d="M12 3v12"/>'
     ),
     "file": (
         '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/>'
@@ -89,7 +94,8 @@ _ICONS: dict[str, str] = {
         '<path d="M8 16H3v5"/>'
     ),
     "download": (
-        '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>'
+        '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>'
+        '<path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>'
     ),
     "trash": (
         '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/>'
@@ -174,9 +180,21 @@ h1, h2, h3, h4, h5, h6, p, li, label, input, textarea, button, select, option,
   font-family: {FONT} !important;
 }}
 .stApp {{ background: var(--ui-bg) !important; }}
-[data-testid="stHeader"] {{ background: transparent !important; height: 0 !important; }}
-[data-testid="stToolbar"], [data-testid="stDecoration"],
-[data-testid="stStatusWidget"], #MainMenu, footer, .stDeployButton {{ display: none !important; }}
+[data-testid="stHeader"] {{
+  background: transparent !important; height: 48px !important; min-height: 48px !important;
+}}
+[data-testid="stDecoration"], [data-testid="stStatusWidget"], #MainMenu, footer,
+.stDeployButton {{ display: none !important; }}
+[data-testid="stToolbar"] {{ background: transparent !important; padding: 0 !important; }}
+[data-testid="stToolbar"] [data-testid="stActionButton"],
+[data-testid="stToolbar"] [data-testid="stMainMenuButton"] {{ display: none !important; }}
+[data-testid="stExpandSidebarButton"] {{
+  border-radius: 9px !important;
+  border: 1px solid var(--ui-border) !important;
+  background: var(--ui-surface) !important;
+}}
+[data-testid="stExpandSidebarButton"]:hover {{ background: var(--ui-surface-2) !important; }}
+[data-testid="stExpandSidebarButton"] span[data-testid="stIconMaterial"] {{ font-size: 20px !important; }}
 [data-testid="stAppViewContainer"] > section {{ background: var(--ui-bg); }}
 [data-testid="stAppViewContainer"] > section > div {{ padding-top: 0; }}
 
@@ -184,7 +202,7 @@ h1, h2, h3, h4, h5, h6, p, li, label, input, textarea, button, select, option,
   max-width: 1120px !important;
   padding-left: 1.5rem !important;
   padding-right: 1.5rem !important;
-  padding-top: 2.2rem !important;
+  padding-top: 3.4rem !important;
   padding-bottom: 4rem !important;
 }}
 
@@ -193,6 +211,10 @@ h1, h2, h3, h4, h5, h6 {{ font-family: {FONT}; color: var(--ui-text); letter-spa
 h1 {{ font-size: 32px; line-height: 1.15; font-weight: 700; margin: 0 0 .35rem; }}
 h2 {{ font-size: 24px; line-height: 1.25; font-weight: 650; margin: 0 0 .3rem; }}
 h3 {{ font-size: 20px; line-height: 1.3; font-weight: 600; }}
+[data-testid="stHeading"] h1 {{ font-size: 32px !important; }}
+[data-testid="stHeading"] h2 {{ font-size: 24px !important; }}
+[data-testid="stHeading"] h3,
+[data-testid="stMarkdownContainer"] h3 {{ font-size: 20px !important; line-height: 1.3 !important; }}
 p, li, label, .stMarkdown {{ font-size: 15px; line-height: 1.62; }}
 small, .stCaption, [data-testid="stCaptionContainer"] p, [data-testid="stCaptionContainer"] {{
   font-size: 13px !important; color: var(--ui-muted) !important;
@@ -351,6 +373,24 @@ hr {{ border-color: var(--ui-border); }}
 [data-testid="stNumberInput"] button {{ color: var(--ui-muted) !important; background: transparent !important; }}
 [data-testid="stNumberInput"] button:hover {{ color: var(--ui-text) !important; }}
 [data-testid="stSelectbox"] button {{ color: var(--ui-muted) !important; background: transparent !important; }}
+/* Streamlit >=1.50 nests a light base-input shell inside the number field */
+[data-testid="stNumberInput"] [data-baseweb="base-input"] {{
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}}
+/* the selectbox value is a plain div, not the hidden input */
+[data-testid="stSelectbox"] [data-baseweb="select"] div[value],
+[data-testid="stSelectbox"] [data-baseweb="select"] [role="combobox"] {{
+  color: var(--ui-text) !important;
+}}
+/* slider value + tick labels */
+[data-testid="stSlider"] [data-testid="stSliderThumbValue"] p {{
+  color: var(--ui-text) !important; font-size: 13px !important; font-weight: 600 !important;
+}}
+[data-testid="stSlider"] [data-testid="stSliderTickBar"] p {{
+  color: var(--ui-muted) !important; font-size: 12px !important;
+}}
 [role="listbox"] {{
   background: var(--ui-surface) !important;
   border: 1px solid var(--ui-border) !important;
@@ -484,10 +524,91 @@ button[data-baseweb="tab"][aria-selected="true"] {{ color: var(--ui-text) !impor
 .ui-brand-name {{ font-size: 16px; font-weight: 650; letter-spacing: -.01em; color: var(--ui-text); }}
 .ui-brand-sub {{ font-size: 12px; color: var(--ui-muted); }}
 
+/* ---------- navigation ---------- */
+[data-testid="stSidebarNav"] {{ padding-top: .35rem; }}
+[data-testid="stSidebarNavItems"] {{ gap: 3px; }}
+[data-testid="stSidebarNavLink"] {{
+  border-radius: 9px; padding: .48rem .65rem !important;
+  border-left: 2px solid transparent;
+}}
+[data-testid="stSidebarNavLink"]:hover {{ background: var(--ui-surface-2) !important; }}
+[data-testid="stSidebarNavLink"][aria-current="page"] {{
+  background: rgba(139,147,255,.10) !important;
+  border-left-color: var(--ui-primary);
+}}
+[data-testid="stSidebarNavLink"] span {{
+  color: var(--ui-muted) !important; font-size: 14px !important; font-weight: 500 !important;
+  letter-spacing: -.005em;
+}}
+[data-testid="stSidebarNavLink"][aria-current="page"] span {{
+  color: var(--ui-text) !important; font-weight: 600 !important;
+}}
+[data-testid="stSidebarNavLink"] span[role="img"] {{ display: none !important; }}
+[data-testid="stSidebarNavSeparator"] {{ display: none !important; }}
+
+/* ---------- bordered containers ---------- */
+[data-testid="stLayoutWrapper"] > [data-testid="stVerticalBlock"] {{
+  background: var(--ui-surface) !important;
+  border: 1px solid var(--ui-border) !important;
+  border-radius: var(--ui-radius) !important;
+  padding: 1.15rem 1.2rem !important;
+}}
+
+/* ---------- pills + segmented controls ---------- */
+[data-testid="stButtonGroup"] {{ gap: .4rem; flex-wrap: wrap; margin-top: .4rem; }}
+[data-testid="stButtonGroup"] button[role="radio"] {{
+  background: var(--ui-surface) !important;
+  border: 1px solid var(--ui-border) !important;
+  border-radius: 999px !important;
+  color: var(--ui-muted) !important;
+  font-size: 13px !important; font-weight: 600 !important;
+  padding: .38rem .8rem !important;
+  min-height: 34px;
+}}
+[data-testid="stButtonGroup"] button[role="radio"]:hover {{
+  border-color: var(--ui-border-strong) !important; color: var(--ui-text) !important;
+}}
+[data-testid="stButtonGroup"] button[role="radio"][aria-checked="true"] {{
+  background: rgba(139,147,255,.14) !important;
+  border-color: rgba(139,147,255,.45) !important;
+  color: var(--ui-text) !important;
+}}
+[data-testid="stButtonGroup"] button[role="radio"] span[role="img"] {{ display: none !important; }}
+
+/* ---------- progress + chat ---------- */
+[data-testid="stProgress"] > div {{ background: #1B2234 !important; }}
+[data-testid="stProgress"] > div > div {{ background: var(--ui-primary) !important; }}
+[data-testid="stChatMessage"] {{
+  background: var(--ui-surface) !important;
+  border: 1px solid var(--ui-border) !important;
+  border-radius: var(--ui-radius) !important;
+  padding: .85rem 1rem !important;
+}}
+[data-testid="stChatInput"] {{
+  background: var(--ui-surface) !important;
+  border: 1px solid var(--ui-border) !important;
+  border-radius: var(--ui-radius) !important;
+}}
+[data-testid="stChatInput"]:focus-within {{ border-color: var(--ui-primary) !important; }}
+[data-testid="stPageLink"] a {{
+  display: inline-flex; align-items: center; gap: .4rem;
+  color: var(--ui-primary) !important; font-weight: 600; font-size: 14px;
+  border: 1px solid var(--ui-border); background: var(--ui-surface);
+  border-radius: 9px; padding: .5rem .85rem;
+}}
+[data-testid="stPageLink"] a:hover {{ border-color: var(--ui-primary); text-decoration: none; }}
+[data-testid="stPageLink"] a span[role="img"] {{ display: none !important; }}
+
+/* ---------- meter ---------- */
+.ui-meter-label {{
+  display: flex; justify-content: space-between; gap: .75rem;
+  font-size: 13px; color: var(--ui-muted); margin-top: .2rem;
+}}
+
 /* ---------- mobile ---------- */
 @media (max-width: 900px) {{
   .block-container, [data-testid="stMainBlockContainer"] {{
-    padding-left: 1rem !important; padding-right: 1rem !important; padding-top: 1.4rem !important;
+    padding-left: 1rem !important; padding-right: 1rem !important; padding-top: 3.4rem !important;
   }}
   .ui-title {{ font-size: 26px !important; }}
   .ui-subtitle {{ font-size: 14px !important; }}
@@ -509,6 +630,7 @@ def setup(
     *,
     icon: str | Path | None = None,
     layout: Literal["centered", "wide"] = "wide",
+    sidebar_state: Literal["auto", "expanded", "collapsed"] = "auto",
 ) -> None:
     """Configure the page and inject the shared theme. Call once, first."""
     icon_value: str | None = None
@@ -521,7 +643,7 @@ def setup(
         page_title=page_title,
         page_icon=icon_value,
         layout=layout,
-        initial_sidebar_state="auto",
+        initial_sidebar_state=sidebar_state,
     )
     st.markdown(CSS, unsafe_allow_html=True)
 
@@ -615,7 +737,9 @@ def _metric_html(
             rising = delta > 0
             tone = "good" if (rising == (good_direction == "up")) else "bad"
         arrow = "arrow-up" if delta > 0 else "arrow-down"
-        delta_html = f'<div class="ui-metric-delta {tone}">{svg(arrow, 13)}{delta:+.1f}{suffix}</div>'
+        delta_html = (
+            f'<div class="ui-metric-delta {tone}">{svg(arrow, 13)}{delta:+.1f}{suffix}</div>'
+        )
     caption_html = f'<div class="ui-metric-caption">{caption}</div>' if caption else ""
     return (
         f'<div class="ui-metric"><div class="ui-metric-label">{label}</div>'
@@ -718,3 +842,20 @@ def app_icon(assets_dir: Path) -> Path | None:
         if candidate.exists():
             return candidate
     return None
+
+
+def meter(value: float, *, tone: str = "primary", caption: str = "") -> None:
+    """Horizontal probability meter with an optional caption below it."""
+    pct = max(0.0, min(1.0, float(value))) * 100
+    colour = {
+        "primary": PRIMARY,
+        "success": SUCCESS,
+        "warning": WARNING,
+        "danger": DANGER,
+    }.get(tone, PRIMARY)
+    caption_html = f'<div class="ui-meter-label"><span>{caption}</span></div>' if caption else ""
+    st.markdown(
+        f'<div class="ui-meter"><span style="width:{pct:.1f}%;background:{colour}"></span></div>'
+        f"{caption_html}",
+        unsafe_allow_html=True,
+    )
