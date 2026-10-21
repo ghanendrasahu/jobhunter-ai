@@ -27,6 +27,7 @@ dependencies = [
     "fastapi==0.141.1",
     "uvicorn[standard]==0.52.2",
     "slowapi==0.1.10",
+    "cryptography==50.0.2",
 ]
 
 [dependency-groups]

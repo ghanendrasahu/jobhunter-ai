@@ -8,6 +8,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Project root: the src/ layout (parents[2] of src/jobhunter/config.py), or an
@@ -68,6 +69,14 @@ class Settings(BaseSettings):
     # "*" is allowed but disables credentials (never send cookies/auth headers
     # with a wildcard origin).
     cors_origins: str = ""
+
+    # Master secret for encrypting persisted portal credentials at rest (the
+    # settings table in history.db). Empty (default) = plaintext storage.
+    # Once set, newly saved sensitive values are encrypted; existing plaintext
+    # values keep working transparently and re-encrypt on their next save.
+    # Losing/rotating this secret makes previously encrypted values unreadable
+    # (they are reported as empty — re-save them).
+    jobhunter_app_secret: SecretStr = SecretStr("")
 
     # ------------------------------------------------------------------
     # Application automation (semi-autonomous apply agent)
