@@ -78,6 +78,10 @@ class Settings(BaseSettings):
     # (they are reported as empty — re-save them).
     jobhunter_app_secret: SecretStr = SecretStr("")
 
+    # Emit jobhunter.* logs as single-line JSON (log aggregators). Default:
+    # human-readable text for local development.
+    log_json: bool = False
+
     # ------------------------------------------------------------------
     # Application automation (semi-autonomous apply agent)
     # ------------------------------------------------------------------

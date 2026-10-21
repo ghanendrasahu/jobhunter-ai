@@ -14,6 +14,7 @@ from slowapi.util import get_remote_address
 
 from jobhunter.agent import run_job_hunter
 from jobhunter.config import Settings, get_settings
+from jobhunter.logging_setup import configure_logging
 
 load_dotenv()
 
@@ -38,6 +39,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ``settings`` is injectable for tests; it defaults to environment config.
     """
     settings = settings or get_settings()
+    configure_logging(log_json=settings.log_json)
     limiter = Limiter(key_func=get_remote_address)
 
     @asynccontextmanager

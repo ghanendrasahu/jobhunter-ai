@@ -274,6 +274,7 @@ The agent:
 | `MAX_FILE_SIZE_MB`                 | No         | Max PDF upload size (default `10`)                                                           |
 | `CORS_ORIGINS`                     | No         | Comma-separated browser origins allowed via CORS (empty = same-origin only)                  |
 | `JOBHUNTER_APP_SECRET`             | No         | Encrypts persisted portal credentials at rest (empty = plaintext storage)                    |
+| `LOG_JSON`                         | No         | Emit application logs as single-line JSON (default: human-readable)                          |
 | `NAUKRI_EMAIL` / `NAUKRI_PASSWORD` | No         | Naukri login for the apply agent (optional — manual login in browser window)                 |
 | `INDEED_EMAIL` / `INDEED_PASSWORD` | No         | Indeed login for the apply agent (optional — manual login in browser window)                 |
 | `AUTO_APPLY_MODE`                  | No         | `human` (pre-fill, user submits), `auto`, `off` (default `human`)                            |
