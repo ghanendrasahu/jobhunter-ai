@@ -62,6 +62,13 @@ class Settings(BaseSettings):
     jobhunter_api_key: str = ""
     api_rate_limit: str = "20/minute"
 
+    # Comma-separated browser origins allowed to call this API via CORS.
+    # Empty (default) = same-origin only: no CORS middleware is installed.
+    # In production use exact entries ("https://jobs.example.com"); the literal
+    # "*" is allowed but disables credentials (never send cookies/auth headers
+    # with a wildcard origin).
+    cors_origins: str = ""
+
     # ------------------------------------------------------------------
     # Application automation (semi-autonomous apply agent)
     # ------------------------------------------------------------------

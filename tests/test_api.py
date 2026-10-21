@@ -19,10 +19,11 @@ PIPELINE_RESULT = {
 }
 
 
-def _app(api_key: str = "", rate_limit: str = "50/minute") -> TestClient:
+def _app(api_key: str = "", rate_limit: str = "50/minute", cors_origins: str = "") -> TestClient:
     settings = Settings(
         jobhunter_api_key=api_key,
         api_rate_limit=rate_limit,
+        cors_origins=cors_origins,
         openai_api_key="",
     )
     return TestClient(create_app(settings))
@@ -90,3 +91,28 @@ def test_rate_limiting():
     assert _upload(client).status_code == 200
     assert _upload(client).status_code == 200
     assert _upload(client).status_code == 429
+
+
+# --- CORS -------------------------------------------------------------------
+
+def test_cors_default_same_origin_only():
+    """No CORS_ORIGINS configured -> no CORS middleware, browser preflight denied."""
+    client = _app()
+    response = client.options("/health", headers={"Origin": "https://evil.example.com"})
+    assert "access-control-allow-origin" not in {k.lower() for k in response.headers}
+
+
+def test_cors_explicit_origins_allow_preflight():
+    client = _app(cors_origins="https://jobs.example.com")
+    response = client.options(
+        "/health",
+        headers={"Origin": "https://jobs.example.com", "Access-Control-Request-Method": "GET"},
+    )
+    assert response.headers["access-control-allow-origin"] == "https://jobs.example.com"
+
+
+def test_cors_wildcard_disables_credentials():
+    client = _app(cors_origins="*")
+    response = client.get("/health", headers={"Origin": "https://any.example.com"})
+    assert response.headers["access-control-allow-origin"] == "*"
+    assert "access-control-allow-credentials" not in {k.lower() for k in response.headers}
