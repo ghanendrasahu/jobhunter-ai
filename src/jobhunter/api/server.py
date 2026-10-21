@@ -42,8 +42,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        settings.upload_dir.mkdir(parents=True, exist_ok=True)
-        logger.info("Upload directory ensured: %s", settings.upload_dir)
+        try:
+            settings.upload_dir.mkdir(parents=True, exist_ok=True)
+            logger.info("Upload directory ensured: %s", settings.upload_dir)
+        except OSError:
+            # Don't crash-loop on an unusable disk: the process starts, /ready
+            # reports 503 with the reason, and the orchestrator decides.
+            logger.exception("Could not ensure upload directory: %s", settings.upload_dir)
         yield
 
     app = FastAPI(
@@ -118,6 +123,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def health_check() -> dict:
         """Simple liveness probe."""
         return {"status": "ok", "version": app.version}
+
+    @app.get("/ready")
+    async def readiness_check() -> JSONResponse:
+        """Readiness probe: verifies required local state is usable.
+
+        Returns 200 when the service can accept work, 503 with the reasons when
+        it cannot (e.g. the upload directory is missing and cannot be created).
+        """
+        problems: list[str] = []
+        try:
+            settings.upload_dir.mkdir(parents=True, exist_ok=True)
+            probe = settings.upload_dir / ".readiness"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink()
+        except OSError as exc:
+            logger.exception("Readiness probe failed: upload dir unusable")
+            problems.append(f"upload dir unusable: {exc}")
+        if problems:
+            return JSONResponse(
+                status_code=503,
+                content={"status": "unavailable", "problems": problems},
+            )
+        return JSONResponse(content={"status": "ready", "version": app.version})
 
     return app
 

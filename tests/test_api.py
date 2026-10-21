@@ -1,6 +1,7 @@
 """Tests for the FastAPI REST endpoints."""
 
 import io
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -116,3 +117,31 @@ def test_cors_wildcard_disables_credentials():
     response = client.get("/health", headers={"Origin": "https://any.example.com"})
     assert response.headers["access-control-allow-origin"] == "*"
     assert "access-control-allow-credentials" not in {k.lower() for k in response.headers}
+
+
+# --- Readiness --------------------------------------------------------------
+
+def test_readiness_ready(client: TestClient):
+    response = client.get("/ready")
+    assert response.status_code == 200
+    assert response.json()["status"] == "ready"
+
+
+def test_readiness_reports_unusable_upload_dir():
+    """A blocked upload dir yields 503 with a reason instead of a crash."""
+    import tempfile
+
+    blocker_dir = Path(tempfile.mkdtemp())
+    blocker = blocker_dir / "blocker"  # a FILE where a directory is expected
+    blocker.write_text("meant to be a file", encoding="utf-8")
+    settings = Settings(
+        jobhunter_api_key="",
+        openai_api_key="",
+        upload_dir=blocker / "uploads",
+    )
+    with TestClient(create_app(settings)) as client:
+        response = client.get("/ready")
+    assert response.status_code == 503
+    body = response.json()
+    assert body["status"] == "unavailable"
+    assert body["problems"]

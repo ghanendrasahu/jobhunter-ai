@@ -272,6 +272,7 @@ The agent:
 | `JOBHUNTER_API_KEY`                | No         | If set, REST clients must send `X-API-Key` header                                            |
 | `API_RATE_LIMIT`                   | No         | FastAPI rate limit (default `20/minute`)                                                     |
 | `MAX_FILE_SIZE_MB`                 | No         | Max PDF upload size (default `10`)                                                           |
+| `CORS_ORIGINS`                     | No         | Comma-separated browser origins allowed via CORS (empty = same-origin only)                  |
 | `NAUKRI_EMAIL` / `NAUKRI_PASSWORD` | No         | Naukri login for the apply agent (optional — manual login in browser window)                 |
 | `INDEED_EMAIL` / `INDEED_PASSWORD` | No         | Indeed login for the apply agent (optional — manual login in browser window)                 |
 | `AUTO_APPLY_MODE`                  | No         | `human` (pre-fill, user submits), `auto`, `off` (default `human`)                            |
@@ -308,6 +309,13 @@ Upload a PDF resume to run the pipeline.
 ### `GET /health`
 
 Liveness probe — returns `{"status": "ok", "version": "3.0.0"}`.
+
+### `GET /ready`
+
+Readiness probe for orchestrators — verifies the upload directory exists and is
+writable. Returns `200 {"status": "ready"}` or `503 {"status": "unavailable",
+"problems": [...]}` so a failing disk is visible to the scheduler without a
+crash-loop.
 
 ---
 
