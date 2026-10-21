@@ -5,7 +5,7 @@
 #
 # Core — for CLI and pipeline
 pypdf==6.15.0
-requests==2.32.5
+requests==2.33.0
 python-dotenv==1.0.1
 python-multipart==0.0.32
 langgraph==1.2.11

@@ -26,6 +26,9 @@ jobs:
       - name: Type check (mypy)
         run: uv run mypy src
 
+      - name: Dependency audit (pip-audit)
+        run: uv run pip-audit
+
       - name: Run tests
         run: uv run pytest --cov=jobhunter --cov-report=term-missing --cov-report=html --cov-fail-under=60
 
