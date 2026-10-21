@@ -326,7 +326,7 @@ crash-loop.
 ```bash
 uv sync --locked
 uv run pytest
-# with coverage (matches CI, which fails below 40%):
+# with coverage (matches CI, which fails below 60%):
 uv run pytest --cov=jobhunter --cov-report=term-missing --cov-fail-under=40
 ```
 
