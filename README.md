@@ -76,6 +76,7 @@ JobHunter AI/
 │       ├── __main__.py        # python -m jobhunter (CLI)
 │       ├── config.py          # pydantic-settings (env/.env)
 │       ├── agent.py           # LangGraph pipeline + run_job_hunter()
+│       ├── logging_setup.py   # logging config (text or single-line JSON)
 │       ├── cli.py             # CLI entry point
 │       ├── web.py             # Streamlit launcher
 │       ├── scheduler.py       # scheduled/background runner
@@ -130,7 +131,7 @@ JobHunter AI/
 ├── uv.lock                    # locked dependency resolution (uv)
 ├── docker-compose.yml         # Containerized Streamlit service
 ├── Dockerfile
-├── .github/workflows/ci.yml   # lint + type-check + tests (coverage ≥ 40%)
+├── .github/workflows/ci.yml   # lint + type-check + tests (coverage ≥ 60%)
 ├── .env.example
 └── .gitignore
 ```
@@ -203,8 +204,25 @@ docker compose up --build
 ### Settings persistence
 
 Dashboard settings (portal credentials, auto-apply mode, application cap, SMTP) saved on the
-**⚙️ Settings** page are stored in `history/settings.db` and override environment variables.
-Environment variables still win for anything not exposed in the UI.
+**⚙️ Settings** page are stored in a `settings` table inside `history/history.db` and override
+environment variables. Environment variables still win for anything not exposed in the UI.
+
+When `JOBHUNTER_APP_SECRET` is set, credential values stored there (portal passwords, SMTP
+password) are **encrypted at rest** (Fernet, `enc:v1:` prefix). Previously saved plaintext
+values keep loading and re-encrypt the next time you save them.
+
+---
+
+## Security & operations
+
+- **API auth** — optional `X-API-Key` requirement via `JOBHUNTER_API_KEY`
+- **Rate limiting** — slowapi, default `20/minute` (`API_RATE_LIMIT`)
+- **Upload hardening** — PDF-only (extension + MIME) with a size cap (`MAX_FILE_SIZE_MB`)
+- **CORS** — explicit origins via `CORS_ORIGINS`; empty = same-origin only; `*` never carries credentials
+- **Encrypted credentials at rest** — persisted portal/SMTP passwords with `JOBHUNTER_APP_SECRET`
+- **Probes** — `GET /health` (liveness) and `GET /ready` (readiness; 503 with reasons if local state is unusable)
+- **JSON logging** — `LOG_JSON=true` emits single-line JSON records (`ts`, `level`, `logger`, `message`)
+- **Gated CI** — ruff + mypy + pytest with a 60% coverage floor before any commit lands
 
 ### Run the Auto-Apply agent
 
