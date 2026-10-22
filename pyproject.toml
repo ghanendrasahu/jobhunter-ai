@@ -10,18 +10,18 @@ readme = "README.md"
 requires-python = "~=3.11.0"
 license = { text = "MIT" }
 dependencies = [
-    "pypdf==6.15.0",
+    "pypdf==6.21.1",
     "requests==2.33.0",
-    "python-dotenv==1.0.1",
+    "python-dotenv==1.2.2",
     "python-multipart==0.0.32",
     "langgraph==1.2.11",
     "langchain-openai==1.4.3",
     "langchain-core==1.5.4",
     "openai==2.54.0",
-    "pydantic-settings==2.14.1",
+    "pydantic-settings==2.14.2",
     "httpx==0.28.1",
     "playwright==1.62.0",
-    "streamlit>=1.62",
+    "streamlit==1.66.1",
     "plotly==6.9.0",
     "pandas==3.0.5",
     "fastapi==0.141.1",
