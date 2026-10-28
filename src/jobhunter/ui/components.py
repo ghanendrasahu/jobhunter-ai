@@ -2,57 +2,98 @@
 
 from __future__ import annotations
 
+from html import escape
 from typing import Any
 
 import streamlit as st
 
 from jobhunter.domains.search.portals import build_portal_urls
 from jobhunter.storage.history import resume_id_from_text
+from jobhunter.ui import design as ui
 
 # ---------------------------------------------------------------------------
-# CSS
+# App-specific styles (layered on top of the shared design system)
 # ---------------------------------------------------------------------------
 _CSS = """
 <style>
-.job-card {
-    background: #ffffff;
-    border: 1px solid #e0e0e0;
-    border-radius: 10px;
-    padding: 1rem 1.2rem;
-    margin-bottom: 0.8rem;
+.jh-side-label {
+    font-size: 11px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase;
+    color: var(--ui-muted); margin: 1.1rem 0 .45rem;
 }
-.score-badge {
-    display: inline-block;
-    padding: 0.2rem 0.6rem;
-    border-radius: 20px;
-    font-size: 0.8rem;
-    font-weight: 700;
+.jh-hist-list { display: flex; flex-direction: column; gap: .25rem; }
+.jh-hist {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: .4rem .5rem; border-radius: 8px; background: var(--ui-surface);
+    font-size: 12px; color: var(--ui-muted);
 }
-.score-high { background: #d1e7dd; color: #0f5132; }
-.score-mid  { background: #fff3cd; color: #664d03; }
-.score-low  { background: #f8d7da; color: #842029; }
-.source-tag {
-    display: inline-block;
-    padding: 0.15rem 0.5rem;
-    border-radius: 10px;
-    font-size: 0.7rem;
-    font-weight: 600;
-    color: #fff;
+.jh-hist-date { color: var(--ui-muted); }
+.jh-hist-count { color: var(--ui-text); font-weight: 600; }
+
+.jh-job {
+    background: var(--ui-surface); border: 1px solid var(--ui-border);
+    border-radius: var(--ui-radius); padding: 1rem 1.1rem; margin-bottom: .65rem;
 }
-.source-naukri  { background: #e9692c; }
-.source-indeed  { background: #2164f3; }
-.source-linkedin { background: #0a66c2; }
-.source-monster { background: #6c2bd9; }
-.source-adzuna  { background: #6c757d; }
-.source-jooble  { background: #198754; }
-.skill-match { color: #198754; font-weight: 500; }
-.skill-missing { color: #dc3545; }
-.resume-card {
-    background: #f8f9fa;
-    border-radius: 8px;
-    padding: 0.8rem 1rem;
-    margin-bottom: 0.5rem;
+.jh-job-top { display: flex; justify-content: space-between; gap: 1rem; align-items: flex-start; }
+.jh-job-title { font-size: 15px; font-weight: 650; color: var(--ui-text); }
+.jh-job-company { font-size: 13px; color: var(--ui-primary); margin-top: .1rem; }
+.jh-job-meta { font-size: 13px; color: var(--ui-muted); margin-top: .3rem; }
+.jh-job-skills { font-size: 12px; margin-top: .45rem; display: flex; flex-wrap: wrap; gap: .35rem; }
+.jh-skill { padding: .1rem .45rem; border-radius: 6px; }
+.jh-skill.matched { color: #8BE8C3; background: rgba(70,211,154,.10); }
+.jh-skill.missing { color: #F5A3A3; background: rgba(241,124,124,.10); }
+.jh-apply { font-size: 13px; font-weight: 600; white-space: nowrap; }
+
+.jh-score {
+    display: inline-block; padding: .12rem .5rem; border-radius: 999px;
+    font-size: 12px; font-weight: 700; margin-left: .5rem;
 }
+.jh-score.high { background: rgba(70,211,154,.12); color: #8BE8C3; }
+.jh-score.mid { background: rgba(242,181,68,.12); color: #F7CD7A; }
+.jh-score.low { background: rgba(241,124,124,.12); color: #F5A3A3; }
+
+.jh-source {
+    display: inline-block; padding: .08rem .45rem; border-radius: 6px;
+    font-size: 11px; font-weight: 600; letter-spacing: .02em;
+    color: var(--ui-muted); background: var(--ui-surface-2); border: 1px solid var(--ui-border);
+}
+.jh-portals { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: .6rem; }
+.jh-portal {
+    display: flex; align-items: center; justify-content: space-between; gap: .5rem;
+    padding: .7rem .8rem; border-radius: var(--ui-radius-sm);
+    background: var(--ui-surface); border: 1px solid var(--ui-border);
+    color: var(--ui-text) !important; font-size: 13px; font-weight: 600; text-decoration: none !important;
+}
+.jh-portal:hover { border-color: var(--ui-border-strong); background: var(--ui-surface-2); }
+.jh-portal svg { color: var(--ui-muted); }
+.jh-app-row {
+    display: flex; align-items: center; justify-content: space-between; gap: .75rem;
+    padding: .65rem .8rem; border-radius: var(--ui-radius-sm);
+    background: var(--ui-surface); border: 1px solid var(--ui-border); margin-bottom: .4rem;
+}
+.jh-resume {
+    background: var(--ui-surface); border: 1px solid var(--ui-border);
+    border-radius: var(--ui-radius-sm); padding: .7rem .85rem;
+}
+.jh-resume-name { font-size: 14px; font-weight: 600; color: var(--ui-text); }
+
+.jh-features {
+    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: .75rem; margin-top: .9rem;
+}
+.jh-feature {
+    background: var(--ui-surface); border: 1px solid var(--ui-border);
+    border-radius: var(--ui-radius); padding: 1rem 1.1rem;
+}
+.jh-feature svg { color: var(--ui-primary); }
+.jh-feature-title { margin-top: .55rem; font-size: 14px; font-weight: 600; color: var(--ui-text); }
+.jh-feature-body { margin-top: .25rem; font-size: 13px; line-height: 1.55; color: var(--ui-muted); }
+@media (max-width: 640px) {
+    .jh-features { grid-template-columns: 1fr; }
+}
+.jh-status { font-size: 12px; font-weight: 700; padding: .1rem .5rem; border-radius: 999px; }
+.jh-status.applied { color: #8BE8C3; background: rgba(70,211,154,.12); }
+.jh-status.skipped { color: #F7CD7A; background: rgba(242,181,68,.12); }
+.jh-status.failed { color: #F5A3A3; background: rgba(241,124,124,.12); }
 </style>
 """
 
@@ -63,7 +104,11 @@ _CSS = """
 def render_results(result: dict[str, Any]) -> None:
     """Render pipeline results: stats, portal links, scored jobs, applications."""
     if result.get("error"):
-        st.error(f"⚠️ {result['error']}")
+        ui.error_state(
+            str(result["error"]),
+            title="The pipeline could not finish",
+            hint="Check the log above, then run it again.",
+        )
         return
 
     resume_text = result.get("resume_text", "")
@@ -74,135 +119,113 @@ def render_results(result: dict[str, Any]) -> None:
 
     applied_count = sum(1 for a in apps if a.get("status") == "applied")
     dup_count = sum(1 for a in apps if a.get("status") == "already_applied")
-
     scored = [j for j in jobs if j.get("match_score") is not None]
     avg_score = sum(j["match_score"] for j in scored) / len(scored) if scored else 0
 
-    col1, col2, col3, col4, col5 = st.columns(5)
-    col1.metric("Jobs Found", len(jobs))
-    col2.metric("New Applications", applied_count)
-    col3.metric("Skipped (Duplicate)", dup_count)
-    col4.metric("Avg Match Score", f"{avg_score:.0f}%")
-    col5.metric("Resume ID", rid[:8])
+    ui.metric_grid(
+        [
+            {"label": "Jobs found", "value": f"{len(jobs):,}", "caption": "across every source"},
+            {"label": "New applications", "value": f"{applied_count:,}", "caption": "submitted this run"},
+            {"label": "Duplicates skipped", "value": f"{dup_count:,}", "caption": "already in your history"},
+            {"label": "Average match", "value": f"{avg_score:.0f}%", "caption": "across scored jobs"},
+            {"label": "Resume", "value": rid[:8], "caption": "run identifier"},
+        ]
+    )
 
     if query:
-        st.markdown(f"**🔍 Query:** `{query}`")
+        ui.section("Quick search", f"Open the same query on each portal for “{escape(query)}”.")
+        _render_portal_grid(build_portal_urls(query))
 
-        st.markdown("### 🔗 Quick Open Portals")
-        portal_links = build_portal_urls(query)
-        cols = st.columns(len(portal_links))
-        for i, portal in enumerate(portal_links):
-            with cols[i]:
-                st.markdown(
-                    f'<a href="{portal["url"]}" target="_blank" style="text-decoration:none;">'
-                    f'<div style="text-align:center; padding:0.5rem; background:#f8f9fa; border-radius:8px;">'
-                    f'<div style="font-size:1.5rem;">{portal.get("icon", "🔗")}</div>'
-                    f'<div style="font-size:0.75rem; font-weight:600;">{portal["source"].title()}</div>'
-                    f"</div></a>",
-                    unsafe_allow_html=True,
-                )
-
-    source_counts: dict[str, int] = {}
-    for j in jobs:
-        src = j.get("source", "unknown")
-        source_counts[src] = source_counts.get(src, 0) + 1
-    if source_counts:
-        parts = [f"**{src.title()}**: {count}" for src, count in sorted(source_counts.items(), key=lambda x: -x[1])]
-        st.markdown("**📊 Sources:** " + " | ".join(parts))
-
-    st.markdown("### 💼 Jobs (Sorted by Match Score)")
+    ui.section(
+        "Matched jobs", "Sorted by match score. Missing skills are shown so you can tailor your resume."
+    )
     scraped_jobs = [j for j in jobs if not j.get("is_portal_link")]
-    portal_jobs = [j for j in jobs if j.get("is_portal_link")]
-
     if scraped_jobs:
         for job in scraped_jobs:
             _render_job_card(job)
     else:
-        st.info("No scraped jobs found. Portal links below will open in your browser.")
+        ui.empty_state(
+            "No scraped jobs this run",
+            "The portals below still work as manual searches. Try a broader query or another portal.",
+            icon_name="search",
+        )
 
-    if portal_jobs:
-        st.markdown("### 🔗 Portal Search Links")
-        cols = st.columns(len(portal_jobs))
-        for i, job in enumerate(portal_jobs):
-            with cols[i]:
-                st.markdown(
-                    f'<a href="{job["url"]}" target="_blank">'
-                    f'<div style="text-align:center; padding:0.5rem; background:#f0f2f6; border-radius:8px;">'
-                    f'{job.get("icon", "🔗")} <strong>{job["source"].title()}</strong>'
-                    f"</div></a>",
-                    unsafe_allow_html=True,
-                )
-
-    st.markdown("### ✅ Application Results")
+    ui.section("Applications", "What the agent submitted, skipped, or could not complete.")
     if apps:
         for app in apps:
             status = app.get("status", "?")
-            badge = {
-                "applied": "✅ Applied",
-                "already_applied": "⏭️ Skipped",
-                "failed": "❌ Failed",
-            }.get(status, status)
+            status_class = {"applied": "applied", "already_applied": "skipped", "failed": "failed"}.get(
+                status, ""
+            )
+            label = {"applied": "Applied", "already_applied": "Skipped", "failed": "Failed"}.get(
+                status, status
+            )
             score = app.get("match_score")
-            score_str = f" | Match: {score}%" if score else ""
+            score_html = f" · {score}% match" if score else ""
             st.markdown(
-                f"""
-                <div class="job-card" style="padding:0.6rem 1rem;">
-                    <span style="font-weight:500;">{badge}</span>
-                    <strong>{app.get("job_title", "?")}</strong> @ {app.get("company", "?")}
-                    <span style="font-size:0.8rem; color:#6c757d;">{score_str}</span>
-                </div>
-                """,
+                f'<div class="jh-app-row">'
+                f'<div><span class="jh-status {status_class}">{escape(label)}</span> '
+                f"<strong>{escape(str(app.get('job_title', 'Untitled role')))}</strong>"
+                f'<span class="jh-job-meta"> @ {escape(str(app.get("company", "Unknown")))}'
+                f"{score_html}</span></div></div>",
                 unsafe_allow_html=True,
             )
     else:
-        st.info("No applications recorded.")
+        ui.empty_state(
+            "No applications recorded",
+            "Nothing was submitted in this run. If you expected applications, check the log above.",
+            icon_name="briefcase",
+        )
 
-    with st.expander("📦 Raw Output"):
-        st.json(result)
+
+def _render_portal_grid(portals: list[dict[str, Any]]) -> None:
+    tiles = "".join(
+        f'<a class="jh-portal" href="{escape(str(p["url"]))}" target="_blank" rel="noopener">'
+        f"<span>{escape(str(p.get('source', '')).title())}</span>{ui.svg('arrow-right', 16)}</a>"
+        for p in portals
+    )
+    st.markdown(f'<div class="jh-portals">{tiles}</div>', unsafe_allow_html=True)
 
 
 def _render_job_card(job: dict[str, Any]) -> None:
     """Render a single scored job card."""
-    score = job.get("match_score", 0)
-    source = job.get("source", "unknown")
-    score_class = "score-high" if score >= 70 else ("score-mid" if score >= 40 else "score-low")
-    src_tag = f'<span class="source-tag source-{source}">{source.title()}</span>'
+    score = int(job.get("match_score") or 0)
+    source = str(job.get("source", "unknown")).title()
+    score_class = "high" if score >= 70 else ("mid" if score >= 40 else "low")
 
     skills_html = ""
-    matched = job.get("matched_skills", [])
-    missing = job.get("missing_skills", [])
+    matched = job.get("matched_skills", []) or []
+    missing = job.get("missing_skills", []) or []
     if matched:
-        skills_html += "✅ " + " ".join(f'<span class="skill-match">{s}</span>' for s in matched[:5])
+        skills_html += "".join(
+            f'<span class="jh-skill matched">+ {escape(str(s))}</span>' for s in matched[:6]
+        )
     if missing:
-        if skills_html:
-            skills_html += " &nbsp;|&nbsp; "
-        skills_html += "❌ " + " ".join(f'<span class="skill-missing">{s}</span>' for s in missing[:5])
+        skills_html += "".join(
+            f'<span class="jh-skill missing">− {escape(str(s))}</span>' for s in missing[:6]
+        )
+    skills_block = f'<div class="jh-job-skills">{skills_html}</div>' if skills_html else ""
 
     salary = ""
     if job.get("salary_min") and job.get("salary_max"):
-        salary = f'₹{job["salary_min"] / 100000:.1f}L – ₹{job["salary_max"] / 100000:.1f}L'
+        salary = f" · ₹{job['salary_min'] / 100000:.1f}L – ₹{job['salary_max'] / 100000:.1f}L"
 
     url = job.get("url", "")
-    url_link = f'<a href="{url}" target="_blank">🔗 Apply</a>' if url else ""
+    apply_html = (
+        f'<a class="jh-apply" href="{escape(str(url))}" target="_blank" rel="noopener">'
+        f"Apply {ui.svg('arrow-right', 13)}</a>"
+        if url
+        else ""
+    )
 
     st.markdown(
-        f"""
-        <div class="job-card">
-            <div style="display:flex; justify-content:space-between; align-items:start;">
-                <div style="flex:1;">
-                    <strong>{job.get("title", "Unknown")}</strong>
-                    <span class="score-badge {score_class}">{score}%</span>
-                    {src_tag}
-                    <div style="font-size:0.85rem; color:#0d6efd;">{job.get("company", "")}</div>
-                    <div style="font-size:0.8rem; color:#6c757d;">
-                        📍 {job.get("location", "India")}
-                        {' | ' + salary if salary else ''}
-                    </div>
-                    <div style="font-size:0.8rem; margin-top:0.3rem;">{skills_html}</div>
-                </div>
-                <div style="text-align:right; font-size:0.85rem;">{url_link}</div>
-            </div>
-        </div>
-        """,
+        f'<div class="jh-job">'
+        f'<div class="jh-job-top"><div>'
+        f'<div class="jh-job-title">{escape(str(job.get("title", "Untitled role")))}'
+        f'<span class="jh-score {score_class}">{score}%</span></div>'
+        f'<div class="jh-job-company">{escape(str(job.get("company", "")))}</div>'
+        f'<div class="jh-job-meta">{escape(str(job.get("location", "India")))}'
+        f'{escape(salary)} · <span class="jh-source">{escape(source)}</span></div>'
+        f"{skills_block}</div><div>{apply_html}</div></div></div>",
         unsafe_allow_html=True,
     )

@@ -11,37 +11,37 @@ JOB_PORTALS: dict[str, dict] = {
         "name": "Naukri",
         "search_url": "https://www.naukri.com/{query}-jobs-in-india",
         "badge_color": "#e9692c",
-        "icon": "🟠",
+        "icon": "",
     },
     "indeed": {
         "name": "Indeed",
         "search_url": "https://in.indeed.com/jobs?q={query}&l=India",
         "badge_color": "#2164f3",
-        "icon": "🔵",
+        "icon": "",
     },
     "linkedin": {
         "name": "LinkedIn",
         "search_url": "https://www.linkedin.com/jobs/search/?keywords={query}&location=India",
         "badge_color": "#0a66c2",
-        "icon": "🟣",
+        "icon": "",
     },
     "monster": {
         "name": "Monster",
         "search_url": "https://www.monsterindia.com/search/{query}-jobs-in-india",
         "badge_color": "#6c2bd9",
-        "icon": "🟤",
+        "icon": "",
     },
     "google_jobs": {
         "name": "Google Jobs",
         "search_url": "https://www.google.com/search?q={query}+jobs+in+India&ibp=htl;jobs",
         "badge_color": "#4285f4",
-        "icon": "🔍",
+        "icon": "",
     },
 }
 
 
 def build_portal_urls(query: str) -> list[dict]:
-    """Return a list of portal-search link "jobs" for a query."""
+    """Return a list of portal-search link "jobs"for a query."""
     encoded = quote(query)
     urls: list[dict] = []
     for key, portal in JOB_PORTALS.items():
@@ -53,7 +53,7 @@ def build_portal_urls(query: str) -> list[dict]:
             "company": f"Search on {portal['name']}",
             "location": "India",
             "url": url,
-            "description": f"Search for '{query}' jobs on {portal['name']}",
+            "description": f"Search for '{query}'jobs on {portal['name']}",
             "salary_min": None,
             "salary_max": None,
             "salary_currency": None,
