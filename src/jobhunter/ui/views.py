@@ -296,6 +296,7 @@ def auto_apply_page() -> None:
                 "Upload a PDF resume above, or switch to a saved resume.",
                 icon_name="file",
             )
+            st.stop()
 
         if not resume_text:
             ui.empty_state(
