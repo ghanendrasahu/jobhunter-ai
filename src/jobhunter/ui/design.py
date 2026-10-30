@@ -515,7 +515,7 @@ def setup(page_title: str, *, icon: str | Path | None = None, layout: str = "wid
         page_title=page_title,
         page_icon=icon_value,
         layout=layout,
-        initial_sidebar_state="expanded",
+        initial_sidebar_state="auto",
     )
     st.markdown(CSS, unsafe_allow_html=True)
 
