@@ -10,6 +10,10 @@ job against your resume, records applications, and tracks everything in a dashbo
 The pipeline is orchestrated as a **LangGraph state machine**, exposed through a **Streamlit
 dashboard**, a **FastAPI REST endpoint**, and a **CLI**.
 
+> **Live demo:** https://jobhunter-ai-h73m.onrender.com
+>
+> Free-tier hosting: the first load after idle can take 30-60 seconds.
+
 ---
 
 ## Features
