@@ -47,6 +47,7 @@ class LinkedInSource(JobSource):
 
     source_name = "linkedin"
     discovery_only = True
+    requires_browser = True
 
     async def search(self, query: str, location: str = "India", max_results: int = 10) -> list[Job]:
         from jobhunter.automation.browser import BrowserSession  # local import avoids import cycles

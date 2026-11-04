@@ -27,6 +27,7 @@ class FounditSource(JobSource):
     """Scrape job cards from Foundit (India)."""
 
     source_name = "foundit"
+    requires_browser = True
 
     async def search(self, query: str, location: str = "India", max_results: int = 10) -> list[Job]:
         search_url = _SEARCH_URL.format(query=quote(query))

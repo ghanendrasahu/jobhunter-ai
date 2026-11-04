@@ -6,6 +6,7 @@ import builtins
 import jobhunter.automation.browser as browser_mod
 import jobhunter.domains.search.sources._shared as shared
 from jobhunter.domains.jobs import Job
+from jobhunter.domains.search.sources import base
 from jobhunter.domains.search.sources.base import active_sources
 from jobhunter.domains.search.sources.cutshort import CutshortSource
 from jobhunter.domains.search.sources.foundit import FounditSource
@@ -14,13 +15,48 @@ from jobhunter.domains.search.sources.hirist import HiristSource
 from jobhunter.domains.search.sources.internshala import InternshalaSource, parse_internshala
 from jobhunter.domains.search.sources.linkedin import LinkedInSource
 
+ALL_SOURCES = {
+    "naukri", "indeed", "linkedin", "google_jobs",
+    "foundit", "internshala", "cutshort", "hirist",
+}
+BROWSER_SOURCES = {"naukri", "indeed", "linkedin", "foundit", "cutshort", "hirist"}
+
 
 def test_registry_includes_all_sources():
+    assert ALL_SOURCES <= set(base.SOURCES)
+
+
+def test_active_sources_skips_browser_sources_without_chromium(monkeypatch):
+    monkeypatch.setattr(base, "browser_available", lambda: False)
     names = {source.source_name for source in active_sources()}
-    assert {
-        "naukri", "indeed", "linkedin", "google_jobs",
-        "foundit", "internshala", "cutshort", "hirist",
-    } <= names
+    assert names.isdisjoint(BROWSER_SOURCES)
+    assert {"google_jobs", "internshala"} <= names
+
+
+def test_active_sources_keeps_browser_sources_with_chromium(monkeypatch):
+    monkeypatch.setattr(base, "browser_available", lambda: True)
+    assert BROWSER_SOURCES <= {source.source_name for source in active_sources()}
+
+
+def test_browser_available_detects_installed_binary(monkeypatch, tmp_path):
+    binary = tmp_path / "chromium-1234" / "chrome-linux" / "chrome"
+    binary.parent.mkdir(parents=True)
+    binary.write_text("", encoding="utf-8")
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
+    base.browser_available.cache_clear()
+    try:
+        assert base.browser_available() is True
+    finally:
+        base.browser_available.cache_clear()
+
+
+def test_browser_available_false_without_binary(monkeypatch, tmp_path):
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
+    base.browser_available.cache_clear()
+    try:
+        assert base.browser_available() is False
+    finally:
+        base.browser_available.cache_clear()
 
 
 # --------------------------------------------------------------------- Google Jobs

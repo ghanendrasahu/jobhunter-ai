@@ -27,6 +27,7 @@ class HiristSource(JobSource):
     """Scrape job cards from Hirist."""
 
     source_name = "hirist"
+    requires_browser = True
 
     async def search(self, query: str, location: str = "India", max_results: int = 10) -> list[Job]:
         slug = quote(query.lower().replace(" ", "-"))

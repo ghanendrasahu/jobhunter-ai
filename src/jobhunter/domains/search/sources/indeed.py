@@ -22,6 +22,7 @@ class IndeedSource(JobSource):
     """Scrape job cards from Indeed India."""
 
     source_name = "indeed"
+    requires_browser = True
 
     async def search(self, query: str, location: str = "India", max_results: int = 10) -> list[Job]:
         try:

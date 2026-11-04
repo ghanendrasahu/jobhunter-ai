@@ -22,6 +22,7 @@ class NaukriSource(JobSource):
     """Scrape job cards from Naukri.com."""
 
     source_name = "naukri"
+    requires_browser = True
 
     async def search(self, query: str, location: str = "India", max_results: int = 10) -> list[Job]:
         try:
