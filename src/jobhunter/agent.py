@@ -110,9 +110,25 @@ def _keyword_query(resume: str) -> str:
     from collections import Counter
 
     common = {
-        "Resume", "Summary", "Experience", "Education", "Skills", "Projects",
-        "Certifications", "Languages", "Interests", "Contact", "Phone", "Email",
-        "LinkedIn", "GitHub", "Portfolio", "References", "Available", "Upon", "Request",
+        "Resume",
+        "Summary",
+        "Experience",
+        "Education",
+        "Skills",
+        "Projects",
+        "Certifications",
+        "Languages",
+        "Interests",
+        "Contact",
+        "Phone",
+        "Email",
+        "LinkedIn",
+        "GitHub",
+        "Portfolio",
+        "References",
+        "Available",
+        "Upon",
+        "Request",
     }
     words = re.findall(r"[A-Z][a-z]+(?:\s[A-Z][a-z]+)*", resume)
     freq = Counter(words)
@@ -246,15 +262,59 @@ def _make_score_jobs(llm: ChatOpenAI):
         eligible.sort(key=lambda j: j.get("match_score", 0), reverse=True)
         logger.info(
             "Scored %d/%d jobs (hard gate skipped %d)",
-            len(eligible), len(jobs), len(skipped),
+            len(eligible),
+            len(jobs),
+            len(skipped),
         )
         return {**state, "jobs": eligible + skipped, "error": ""}
 
     return score
 
 
+def _application_explanation(job: dict[str, Any], outcome: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Build the per-job audit trail: eligibility -> relevance -> application."""
+    from jobhunter.automation.apply_contract import apply_portal_for
+
+    return {
+        "eligibility": {
+            "status": job.get("eligibility_status"),
+            "decision": job.get("eligibility_decision"),
+            "reasons": list(job.get("eligibility_reasons") or []),
+        },
+        "relevance": {
+            "score": job.get("match_score"),
+            "decision": job.get("relevance_decision"),
+        },
+        "application": {
+            "route": apply_portal_for(job),
+            "outcome": outcome.get("status") if outcome else None,
+        },
+    }
+
+
+def _skipped_outcome(job: dict[str, Any], status: str, detail: str) -> dict[str, Any]:
+    return {
+        "job_id": job.get("id"),
+        "job_title": job.get("title"),
+        "company": job.get("company"),
+        "status": status,
+        "detail": detail,
+        "explanation": _application_explanation(job),
+    }
+
+
 def apply_jobs(state: JobHunterState) -> JobHunterState:
-    """Record applications for each eligible job; skip/review jobs are reported."""
+    """Consume the PH6-ranked jobs and produce one honest outcome per job.
+
+    Routing (in order):
+    1. PH5 ``skip`` -> recorded as skipped; never applied.
+    2. PH5 ``review`` -> recorded as needs_review; never applied.
+    3. Discovery-only sources -> recorded as discovery_only; never applied.
+    4. ``pipeline_apply_mode == "off"`` (default) -> record/open only, no browser.
+    5. Otherwise (opt-in ``human``/``auto``) -> supported portals only, in PH6
+       ranking order, capped by ``max_applications_per_run``, deduplicated
+       against history; submitted only after post-click verification.
+    """
     if state.get("error"):
         return state
     resume = state.get("resume_text", "")
@@ -263,50 +323,139 @@ def apply_jobs(state: JobHunterState) -> JobHunterState:
         logger.warning("No jobs to apply to")
         return {**state, "applications": [], "error": ""}
 
-    applications: list[dict[str, Any]] = []
-    for job in jobs:
+    settings = get_settings()
+    pipeline_mode = settings.pipeline_apply_mode
+    # Local import: jobhunter.automation's package init pulls the browser stack,
+    # which imports jobhunter.agent — importing it at module level would cycle.
+    from jobhunter.automation.apply_contract import (
+        apply_portal_for,
+        missing_apply_fields,
+        validate_job_contract,
+    )
+
+    slots: list[dict[str, Any] | None] = [None] * len(jobs)
+    actionable: list[tuple[int, dict[str, Any]]] = []
+
+    for idx, job in enumerate(jobs):
         eligibility_decision = job.get("eligibility_decision")
         if eligibility_decision == "skip":
-            applications.append({
-                "job_id": job.get("id"),
-                "job_title": job.get("title"),
-                "company": job.get("company"),
-                "status": "skipped",
-                "detail": "; ".join(job.get("eligibility_reasons", []) or []),
-            })
+            slots[idx] = _skipped_outcome(job, "skipped", "; ".join(job.get("eligibility_reasons", []) or []))
             continue
         if eligibility_decision == "review":
-            applications.append({
-                "job_id": job.get("id"),
-                "job_title": job.get("title"),
-                "company": job.get("company"),
-                "status": "needs_review",
-                "detail": "; ".join(job.get("eligibility_reasons", []) or [])
-                or "; ".join(job.get("eligibility_exposed", []) or []),
-            })
+            detail = "; ".join(job.get("eligibility_reasons", []) or []) or "; ".join(
+                job.get("eligibility_exposed", []) or []
+            )
+            slots[idx] = _skipped_outcome(job, "needs_review", detail)
             continue
         if job.get("discovery_only"):
-            # Discovery-only sources (e.g. LinkedIn) are browsable but must never
-            # be auto-applied to.
-            applications.append({
-                "job_id": job.get("id"),
-                "job_title": job.get("title"),
-                "company": job.get("company"),
-                "status": "discovery_only",
-                "detail": "Discovery-only source — no application submitted.",
-            })
+            # Discovery-only sources (e.g. LinkedIn, Google Jobs) are browsable
+            # but must never be auto-applied to.
+            slots[idx] = _skipped_outcome(
+                job, "discovery_only", "Discovery-only source — no application submitted."
+            )
             continue
+        if pipeline_mode == "off":
+            # Out-of-the-box behaviour: record the job (portal links open in
+            # the user's browser). Nothing is ever submitted from this path.
+            try:
+                entry = apply_to_job(job, resume)
+            except Exception as exc:
+                logger.exception("Failed to apply to job %s", job.get("id"))
+                entry = {
+                    "job_id": job.get("id"),
+                    "job_title": job.get("title"),
+                    "company": job.get("company"),
+                    "status": "failed",
+                    "detail": str(exc),
+                }
+            entry["explanation"] = _application_explanation(job)
+            slots[idx] = entry
+            continue
+        if eligibility_decision != "apply":
+            # Opt-in submission requires a positive PH5 verdict; anything else
+            # (unknown/missing decision) is never applied.
+            slots[idx] = _skipped_outcome(
+                job,
+                "needs_review",
+                f"Eligibility decision {eligibility_decision!r} — not applying.",
+            )
+            continue
+        route = apply_portal_for(job)
+        if route is None:
+            source = job.get("source") or job.get("portal") or "?"
+            slots[idx] = _skipped_outcome(
+                job,
+                "needs_review",
+                f"Source {source!r} has no automated application strategy — refusing to fall through.",
+            )
+            continue
+        missing_contract = validate_job_contract(job)
+        if missing_contract:
+            slots[idx] = _skipped_outcome(
+                job,
+                "needs_review",
+                f"Search result missing contract keys: {', '.join(missing_contract)}.",
+            )
+            continue
+        missing = missing_apply_fields(job)
+        if missing:
+            slots[idx] = _skipped_outcome(
+                job, "needs_review", f"Job missing required fields: {', '.join(missing)}."
+            )
+            continue
+        actionable.append((idx, job))
+
+    if actionable:
         try:
-            applications.append(apply_to_job(job, resume))
+            from jobhunter.automation.apply_agent import ApplyAgent
+
+            outcomes = ApplyAgent().apply_ranked_jobs(
+                [job for _, job in actionable],
+                resume,
+                candidate=state.get("candidate"),
+                mode=pipeline_mode,
+                max_applications=settings.max_applications_per_run,
+                resume_pdf=state.get("file_path") or None,
+            )
         except Exception as exc:
-            logger.exception("Failed to apply to job %s", job.get("id"))
-            applications.append({
-                "job_id": job.get("id"),
-                "job_title": job.get("title"),
-                "company": job.get("company"),
-                "status": "failed",
-                "detail": str(exc),
-            })
+            logger.exception("Pipeline auto-apply failed")
+            outcomes = [
+                {
+                    "job_id": job.get("id", "unknown"),
+                    "title": job.get("title", ""),
+                    "company": job.get("company", ""),
+                    "source": job.get("source") or "unknown",
+                    "status": "failed",
+                    "detail": f"Pipeline auto-apply failed: {exc}",
+                }
+                for _, job in actionable
+            ]
+        if len(outcomes) != len(actionable):
+            logger.error(
+                "apply_ranked_jobs returned %d outcomes for %d jobs — padding safely",
+                len(outcomes),
+                len(actionable),
+            )
+            padded = list(outcomes[: len(actionable)])
+            while len(padded) < len(actionable):
+                job = actionable[len(padded)][1]
+                padded.append(
+                    {
+                        "job_id": job.get("id", "unknown"),
+                        "title": job.get("title", ""),
+                        "company": job.get("company", ""),
+                        "source": job.get("source") or "unknown",
+                        "status": "failed",
+                        "detail": "Missing outcome for this job — not applied.",
+                    }
+                )
+            outcomes = padded
+        for (idx, job), outcome in zip(actionable, outcomes, strict=True):
+            entry = dict(outcome)
+            entry["explanation"] = _application_explanation(job, outcome)
+            slots[idx] = entry
+
+    applications = [slot for slot in slots if slot is not None]
 
     logger.info("Recorded %d outcomes for %d jobs", len(applications), len(jobs))
 

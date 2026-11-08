@@ -230,6 +230,7 @@ class GoogleJobsSource(JobSource):
                     description_truncated=not bool(result.get("description")),
                     url=url_value,
                     source=self.source_name,
+                    discovery_only=True,
                     source_job_id=hashlib.md5(url_value.encode()).hexdigest()[:8] if url_value else "",
                     posted_date=result.get("posted_date") or "",
                 ))

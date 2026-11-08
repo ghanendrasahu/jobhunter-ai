@@ -150,6 +150,7 @@ class InternshalaSource(JobSource):
                     description_truncated=True,
                     url=url_value,
                     source=self.source_name,
+                    discovery_only=True,
                     source_job_id=hashlib.md5(url_value.encode()).hexdigest()[:8] if url_value else "",
                 ))
             logger.info("Parsed %d internships from Internshala for '%s'", len(jobs), query)

@@ -28,17 +28,36 @@ SUPPORTED_APPLY_PORTALS: tuple[str, ...] = ("naukri", "indeed")
 # missing any of these cannot be applied.
 REQUIRED_APPLY_FIELDS: tuple[str, ...] = ("title", "url")
 
+# Fields every search/discovery result must retain end-to-end (graph ->
+# eligibility -> ranking -> application). Presence is required; values may be
+# empty strings (e.g. a portal-search link carries no company).
+SEARCH_RESULT_REQUIRED_FIELDS: tuple[str, ...] = (
+    "id",
+    "fingerprint",
+    "title",
+    "company",
+    "location",
+    "url",
+    "source",
+    "description",
+    "required_skills",
+    "preferred_skills",
+    "seniority",
+    "discovery_only",
+    "portal",
+)
+
 # Fields the application layer reads from graph/card job dicts (documentation
 # of the contract, not validated exhaustively).
 APPLY_LAYER_FIELDS: tuple[str, ...] = (
     "id",
-    "source",              # source/site identity, e.g. "naukri", "foundit"
-    "portal",              # apply-strategy key (set by collect_cards)
-    "url",                 # job page to open for applying
-    "discovery_only",      # True => never auto-apply
+    "source",  # source/site identity, e.g. "naukri", "foundit"
+    "portal",  # apply-strategy key (set by collect_cards)
+    "url",  # job page to open for applying
+    "discovery_only",  # True => never auto-apply
     "eligibility_decision",  # PH5 output: "apply" / "skip" / "review" / ...
     "relevance_decision",  # PH6 output: "apply" / "skip" / "neutral"
-    "match_score",         # PH6 relevance score (0-100)
+    "match_score",  # PH6 relevance score (0-100)
     "title",
     "company",
     "description",
@@ -77,3 +96,14 @@ def may_auto_apply(job: dict[str, Any]) -> bool:
     if apply_portal_for(job) is None:
         return False
     return not missing_apply_fields(job)
+
+
+def validate_job_contract(job: dict[str, Any]) -> list[str]:
+    """Return the contract keys missing from ``job`` (empty list => contract holds).
+
+    This is the end-to-end check the pipeline uses before trusting a search
+    result: every key in :data:`SEARCH_RESULT_REQUIRED_FIELDS` must be present.
+    Value emptiness is only enforced for the apply-critical fields by
+    :func:`missing_apply_fields` — a missing key never silently passes.
+    """
+    return [field for field in SEARCH_RESULT_REQUIRED_FIELDS if field not in job]

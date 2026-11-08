@@ -24,7 +24,7 @@ async def scrape_linkedin_jobs(query: str, location: str = "India", max_results:
     except ImportError:
         return []
 
-    jobs = []
+    jobs: list[dict] = []
     search_url = f"https://www.linkedin.com/jobs/search/?keywords={quote(query)}&location={quote(location)}"
 
     try:
@@ -59,18 +59,29 @@ async def scrape_linkedin_jobs(query: str, location: str = "India", max_results:
                     if not url.startswith("http"):
                         url = f"https://www.linkedin.com{url}"
 
-                    jobs.append({
-                        "id": f"linkedin-scraped-{hashlib.md5((url or '').encode()).hexdigest()[:8]}",
-                        "title": title.strip(),
-                        "company": company.strip(),
-                        "location": loc.strip(),
-                        "description": "",
-                        "url": url,
-                        "salary_min": None,
-                        "salary_max": None,
-                        "salary_currency": None,
-                        "source": "linkedin",
-                    })
+                    jobs.append(
+                        {
+                            "id": f"linkedin-scraped-{hashlib.md5((url or '').encode()).hexdigest()[:8]}",
+                            "title": title.strip(),
+                            "company": company.strip(),
+                            "location": loc.strip(),
+                            "description": "",
+                            "url": url,
+                            "salary_min": None,
+                            "salary_max": None,
+                            "salary_currency": None,
+                            "source": "linkedin",
+                            "discovery_only": True,
+                            "is_portal_link": False,
+                            "fingerprint": hashlib.md5(
+                                f"{company.strip().lower()}|{title.strip().lower()}|{loc.strip().lower()}".encode()
+                            ).hexdigest()[:12],
+                            "portal": "",
+                            "required_skills": [],
+                            "preferred_skills": [],
+                            "seniority": "UNKNOWN",
+                        }
+                    )
                 except Exception as exc:
                     logger.debug("Failed to parse LinkedIn card: %s", exc)
                     continue

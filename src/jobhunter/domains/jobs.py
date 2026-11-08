@@ -63,6 +63,10 @@ class Job:
     discovery_only: bool = False
     badge_color: str = ""
     icon: str = ""
+    # Apply-strategy hint set by portal card collectors (e.g. "naukri"). Search
+    # results leave this empty; the apply layer then derives the route from
+    # ``source`` via ``apply_portal_for``.
+    portal: str = ""
 
     @property
     def id(self) -> str:
@@ -78,9 +82,16 @@ class Job:
         return f"{self.source or 'job'}-{digest}"
 
     def to_dict(self) -> dict[str, Any]:
-        """Return the plain-dict form consumed by matching/history/UI code."""
+        """Return the plain-dict form consumed by matching/history/UI code.
+
+        Includes the ``fingerprint`` identity used for cross-source dedupe so
+        every search result retains its contract keys (see
+        ``apply_contract.SEARCH_RESULT_REQUIRED_FIELDS``).
+        """
         return {
             "id": self.id,
+            "fingerprint": self.fingerprint,
+            "portal": self.portal,
             "title": self.title,
             "company": self.company,
             "location": self.location,

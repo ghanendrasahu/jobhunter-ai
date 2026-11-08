@@ -96,6 +96,12 @@ class Settings(BaseSettings):
 
     # Automation behaviour
     auto_apply_mode: Literal["human", "auto", "off"] = "human"
+    # Opt-in for the LangGraph pipeline (agent.apply_jobs) to consume the
+    # PH6-ranked eligible jobs and apply to them via the apply agent.
+    #   off   (default) — record/open only; no browser is launched, nothing submitted.
+    #   human — pre-fill forms for supported portals; the user completes & submits.
+    #   auto  — additionally click submit when nothing is missing (PH5/PH6 gates still apply).
+    pipeline_apply_mode: Literal["off", "human", "auto"] = "off"
     max_applications_per_run: int = 5
     headless_browser: bool = False
     browser_state_dir: Path = PROJECT_ROOT / "data" / "browser_state"

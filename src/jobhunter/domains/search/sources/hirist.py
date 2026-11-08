@@ -66,6 +66,7 @@ class HiristSource(JobSource):
                 description_truncated=True,
                 url=url,
                 source="hirist",
+                discovery_only=True,
                 source_job_id=hashlib.md5(url.encode()).hexdigest()[:8],
             )
         except Exception as exc:

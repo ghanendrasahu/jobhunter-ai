@@ -85,9 +85,24 @@ OBSTACLE_PATTERNS = [
 
 # Common Indian cities used to strip location tokens from URL slugs.
 INDIAN_CITIES = [
-    "bangalore", "bengaluru", "hyderabad", "mumbai", "pune", "chennai",
-    "delhi", "noida", "gurgaon", "gurugram", "kolkata", "ahmedabad",
-    "kochi", "jaipur", "indore", "chandigarh", "remote", "india",
+    "bangalore",
+    "bengaluru",
+    "hyderabad",
+    "mumbai",
+    "pune",
+    "chennai",
+    "delhi",
+    "noida",
+    "gurgaon",
+    "gurugram",
+    "kolkata",
+    "ahmedabad",
+    "kochi",
+    "jaipur",
+    "indore",
+    "chandigarh",
+    "remote",
+    "india",
 ]
 
 
@@ -188,9 +203,13 @@ def job_experience_years(job: dict) -> int | None:
     Parses the URL slug, title, and description (e.g. ``5-to-10-years``,
     ``5+ years``, ``fresher``, ``0 to 1 years``).
     """
-    text = " ".join([
-        job.get("url", ""), job.get("title", ""), job.get("description", ""),
-    ]).lower()
+    text = " ".join(
+        [
+            job.get("url", ""),
+            job.get("title", ""),
+            job.get("description", ""),
+        ]
+    ).lower()
     if any(k in text for k in ("fresher", "entry level", "0 to 1 years", "0-1 years", "freshers")):
         return 0
     norm = re.sub(r"\s+", " ", text)
@@ -227,10 +246,11 @@ def collect_cards(page: Page, portal: str, max_results: int = 10) -> list[dict]:
             if url.startswith("/"):
                 url = f"https://{page.url.split('/')[2]}{url}"
 
-            title = (title_el.inner_text().strip() if title_el else "Unknown")
-            company = (company_el.inner_text().strip() if company_el else "")
+            title = title_el.inner_text().strip() if title_el else "Unknown"
+            company = company_el.inner_text().strip() if company_el else ""
             if not company or company == "Unknown":
                 company = _fallback_company(card, title, url or "")
+            location = location_el.inner_text().strip() if location_el else "India"
 
             card_text = ""
             try:
@@ -239,18 +259,26 @@ def collect_cards(page: Page, portal: str, max_results: int = 10) -> list[dict]:
                 pass
             posted_days = parse_posted_days(card_text)
 
-            jobs.append({
-                "id": f"{portal}-{hashlib_md5(url or '')}",
-                "source": portal,
-                "portal": portal,
-                "title": title,
-                "company": company or "Unknown",
-                "location": (location_el.inner_text().strip() if location_el else "India"),
-                "description": (desc_el.inner_text().strip() if desc_el else ""),
-                "url": url,
-                "posted_days": posted_days,
-                "salary_text": _extract_salary_text(card_text),
-            })
+            jobs.append(
+                {
+                    "id": f"{portal}-{hashlib_md5(url or '')}",
+                    "source": portal,
+                    "portal": portal,
+                    "title": title,
+                    "company": company or "Unknown",
+                    "location": location,
+                    "description": (desc_el.inner_text().strip() if desc_el else ""),
+                    "url": url,
+                    "posted_days": posted_days,
+                    "salary_text": _extract_salary_text(card_text),
+                    # Full search-result contract keys (see apply_contract).
+                    "fingerprint": _card_fingerprint(company or "Unknown", title, location),
+                    "discovery_only": False,
+                    "required_skills": [],
+                    "preferred_skills": [],
+                    "seniority": "UNKNOWN",
+                }
+            )
         except Exception:
             continue
     return jobs
@@ -261,6 +289,21 @@ def hashlib_md5(value: str) -> str:
     import hashlib
 
     return hashlib.md5(value.encode()).hexdigest()[:10]
+
+
+def _card_fingerprint(company: str, title: str, location: str) -> str:
+    """Dedupe identity consistent with ``Job.fingerprint`` (normalised)."""
+    import hashlib
+
+    from jobhunter.domains.jobs import _normalise
+    from jobhunter.domains.search.normalize import normalize_location, normalize_title
+
+    identity = (
+        f"{_normalise(company)}|"
+        f"{_normalise(normalize_title(title))}|"
+        f"{_normalise(normalize_location(location))}"
+    )
+    return hashlib.md5(identity.encode()).hexdigest()[:12]
 
 
 def parse_posted_days(text: str) -> int | None:
@@ -308,7 +351,7 @@ def _fallback_company(card, title: str, url: str) -> str:
 
     slug = url.split("/")[-1]
     if slug.startswith("job-listings-"):
-        body = slug[len("job-listings-"):]
+        body = slug[len("job-listings-") :]
         body = re.sub(r"-\d{4,}$", "", body)
         body = re.sub(r"-\d+-to-\d+-years|-to-\d+-years|-\d+-years|-years", "", body)
         title_slug = re.sub(r"[\s@()]+", "-", title.strip().lower()).strip("-")
