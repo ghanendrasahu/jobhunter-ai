@@ -455,3 +455,20 @@ def list_submission_attempts(resume_text: str) -> list[dict]:
     except Exception as exc:
         logger.warning("Failed to list submission attempts: %s", exc)
         return []
+
+
+def list_all_submission_attempts() -> list[dict]:
+    """Every unverified submission attempt across all resumes."""
+    try:
+        conn = _connect()
+        try:
+            rows = conn.execute(
+                "SELECT resume_id, job_id, url, attempted_at FROM submission_attempts "
+                "ORDER BY attempted_at DESC"
+            ).fetchall()
+        finally:
+            conn.close()
+        return [dict(row) for row in rows]
+    except Exception as exc:
+        logger.warning("Failed to list submission attempts: %s", exc)
+        return []

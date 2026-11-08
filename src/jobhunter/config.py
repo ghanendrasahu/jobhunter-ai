@@ -203,6 +203,18 @@ PERSISTED_SETTING_KEYS: tuple[str, ...] = (
     "batch_size",
     "cooldown_seconds",
     "prioritize_remote",
+    # PHASE 9 — search configuration + pipeline approval control
+    "pipeline_apply_mode",
+    "fresher_only",
+    "max_experience_years",
+    "query_variants",
+    "search_locations",
+    "search_max_concurrency",
+    "score_max_workers",
+    "fetch_full_descriptions",
+    "fetch_full_description_max",
+    "source_timeout_seconds",
+    "retry_max_attempts",
 )
 
 
@@ -222,11 +234,23 @@ def _persisted_overrides() -> dict[str, object]:
         value: object = raw[key]
         field_info = fields[key]
         annotation = field_info.annotation
-        if annotation in (int, bool, float):
+        if annotation is bool:
+            value = str(raw[key]).strip().lower() in ("1", "true", "yes", "on")
+        elif annotation is int:
             try:
-                value = annotation(raw[key])
+                value = int(raw[key])
             except (TypeError, ValueError):
                 continue
+        elif annotation is float:
+            try:
+                value = float(raw[key])
+            except (TypeError, ValueError):
+                continue
+        if key in ("pipeline_apply_mode", "auto_apply_mode"):
+            allowed = {"off", "human", "auto"}
+            if str(value).strip().lower() not in allowed:
+                continue
+            value = str(value).strip().lower()
         overrides[key] = value
     return overrides
 

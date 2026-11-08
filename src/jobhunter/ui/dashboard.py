@@ -11,8 +11,8 @@ from pathlib import Path
 import streamlit as st
 
 from jobhunter.storage.history import clear_all_history, export_history_csv, list_all_histories
+from jobhunter.ui import control_center, views
 from jobhunter.ui import design as ui
-from jobhunter.ui import views
 from jobhunter.ui.components import _CSS
 
 ROOT_DIR = Path(__file__).resolve().parents[3]
@@ -50,7 +50,16 @@ def render_sidebar() -> str:
         st.markdown('<div class="jh-side-label">Workspace</div>', unsafe_allow_html=True)
         page = st.radio(
             "Navigate",
-            ["Job Search", "Auto Apply", "Dashboard", "Resumes", "Settings"],
+            [
+                "Job Search",
+                "Auto Apply",
+                "Dashboard",
+                "Resumes",
+                "Q&A Memory",
+                "Needs Review",
+                "History",
+                "Settings",
+            ],
             label_visibility="collapsed",
         )
 
@@ -85,6 +94,12 @@ def main() -> None:
         views.dashboard_page()
     elif page == "Resumes":
         views.resumes_page()
+    elif page == "Q&A Memory":
+        control_center.qa_memory_page()
+    elif page == "Needs Review":
+        control_center.needs_review_page()
+    elif page == "History":
+        control_center.history_page()
     else:
         views.settings_page()
 

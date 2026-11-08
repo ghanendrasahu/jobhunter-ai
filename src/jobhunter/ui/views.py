@@ -78,6 +78,29 @@ def job_search_page() -> None:
     file_path = ""
     resume_source_is_upload = resume_source == "Upload new PDF"
 
+    with st.expander("Discovery sources", expanded=False):
+        from jobhunter.storage import run_state
+        from jobhunter.ui.state import source_status_report
+
+        st.caption(
+            "Sources marked discovery-only never auto-apply. Browser-backed sources are skipped when Chromium is not installed."
+        )
+        for item in source_status_report():
+            availability = "available" if item["available"] else "skipped (no Chromium)"
+            apply_support = "apply-ready" if not item["discovery_only"] else "discovery only"
+            browser_note = " · needs browser" if item["requires_browser"] else ""
+            st.markdown(
+                f"- **{escape(item['name'])}** — {escape(availability)} · {escape(apply_support)}{browser_note}"
+            )
+        latest = run_state.list_runs(1)
+        if latest:
+            metrics = latest[0].get("source_metrics") or {}
+            if metrics:
+                st.caption("Latest run:")
+                for name, m in sorted(metrics.items()):
+                    outcome = "failed" if m.get("failed") else f"{m.get('found', 0)} found"
+                    st.markdown(f"- `{escape(name)}` — {escape(outcome)}")
+
     if resume_source_is_upload:
         uploaded = st.file_uploader("Choose a PDF resume", type=["pdf"])
         if uploaded:
@@ -464,6 +487,15 @@ def auto_apply_page() -> None:
             more = " and more" if len(roles) > 8 else ""
             st.caption("Searching: " + ", ".join(roles[:8]) + more + ".")
 
+        if mode == "auto":
+            auto_confirmed = st.checkbox(
+                "I understand Auto mode submits real applications from my accounts.",
+                key="aa_auto_confirm",
+                help="Human mode pre-fills forms but leaves the final submit to you.",
+            )
+        else:
+            auto_confirmed = True
+
         with st.expander("JobHunter Browser"):
             from jobhunter.automation.browser import (
                 PORTAL_LOGIN_CHECKS,
@@ -544,7 +576,12 @@ def auto_apply_page() -> None:
 
         col_b1, col_b2, col_b3 = st.columns([1, 1, 1])
         with col_b1:
-            if st.button("Start applying", type="primary", width="stretch", disabled=running):
+            if st.button(
+                "Start applying",
+                type="primary",
+                width="stretch",
+                disabled=running or not auto_confirmed,
+            ):
                 q: queue.Queue = queue.Queue()
                 ev = threading.Event()
                 kwargs = {
@@ -580,6 +617,8 @@ def auto_apply_page() -> None:
                     st.session_state.pop(key, None)
                 st.rerun()
 
+        if mode == "auto" and not auto_confirmed and not running:
+            st.caption("Auto mode stays blocked until you confirm above — or switch to human mode.")
         if running:
             st.info("The agent is running. Log lines refresh as new events arrive.")
 
@@ -656,7 +695,10 @@ def dashboard_page() -> None:
         icon_name="chart",
     )
     data = get_analytics_data()
+    from jobhunter.services.analytics import application_metrics
+    from jobhunter.storage import run_state
 
+    metrics = application_metrics()
     avg_per_day = sum(data["daily_counts"].values()) / max(len(data["daily_counts"]), 1)
     ui.metric_grid(
         [
@@ -664,6 +706,12 @@ def dashboard_page() -> None:
             {"label": "Resumes used", "value": f"{data['total_resumes']:,}"},
             {"label": "Unique jobs", "value": f"{data['unique_jobs']:,}"},
             {"label": "Average per day", "value": f"{avg_per_day:.1f}", "caption": "on active days"},
+            {"label": "Attempts recorded", "value": f"{metrics['total_attempts']:,}"},
+            {"label": "Verified submitted", "value": f"{metrics['submitted']:,}"},
+            {
+                "label": "Submission rate",
+                "value": f"{metrics['submission_rate'] * 100:.0f}%" if metrics["total_attempts"] else "—",
+            },
         ]
     )
 
@@ -723,6 +771,65 @@ def dashboard_page() -> None:
             "Companies you apply to will be ranked here by application volume.",
             icon_name="briefcase",
         )
+
+    ui.section("Run summary", "Recent pipeline and agent runs persisted on this device.")
+    runs = run_state.list_runs(10)
+    if not runs:
+        st.caption("No runs recorded yet.")
+    else:
+        for run in runs:
+            summary = run.get("summary") or {}
+            counts = summary.get("applications") or {}
+            label = (
+                f"{run.get('origin', 'run')} · {run.get('query') or '—'} · "
+                f"{run.get('status', 'unknown')} · {str(run.get('started_at', ''))[:16]}"
+            )
+            with st.expander(label):
+                st.markdown(
+                    f"**Mode:** {escape(str(run.get('mode') or '—'))} · "
+                    f"**Portals:** {escape(', '.join(run.get('portals') or []) or '—')} · "
+                    f"**Duration:** {escape(str(summary.get('duration_seconds', '—')))}"
+                )
+                st.markdown(
+                    f"**Applications:** {counts.get('total', 0)} · "
+                    f"**Submitted:** {counts.get('submitted', 0)}"
+                )
+                by_status = counts.get("by_status") or {}
+                if by_status:
+                    st.caption(
+                        "By status: "
+                        + " · ".join(
+                            f"{name}: {n}" for name, n in sorted(by_status.items(), key=lambda kv: -kv[1])
+                        )
+                    )
+                source_metrics = run.get("source_metrics") or {}
+                if source_metrics:
+                    st.caption(
+                        "Sources: "
+                        + " · ".join(
+                            f"`{name}`: {'failed' if m.get('failed') else str(m.get('found', 0)) + ' found'}"
+                            for name, m in sorted(source_metrics.items())
+                        )
+                    )
+
+    ui.section("Errors & warnings", "Recent error and warning events from the latest runs.")
+    error_events = []
+    for run in runs:
+        for event in run_state.events_for_run(run["run_id"]):
+            if event.get("level") in ("error", "warning"):
+                error_events.append(
+                    (
+                        str(event.get("ts", ""))[:19],
+                        str(event.get("stage", "")),
+                        str(event.get("message", "")),
+                    )
+                )
+    error_events = error_events[-25:][::-1]
+    if not error_events:
+        st.caption("No error or warning events in the recent runs.")
+    else:
+        for ts, stage, message in error_events:
+            st.markdown(f"**{escape(ts)}** · {escape(stage)}: {escape(message)}")
 
 
 def resumes_page() -> None:
@@ -853,6 +960,127 @@ def settings_page() -> None:
             {
                 "auto_apply_mode": auto_apply_mode,
                 "max_applications_per_run": str(max_applications),
+            }
+        )
+
+    def _int(value, default: int) -> int:
+        try:
+            return int(str(value).strip())
+        except (TypeError, ValueError):
+            return default
+
+    def _float(value, default: float) -> float:
+        try:
+            return float(str(value).strip())
+        except (TypeError, ValueError):
+            return default
+
+    with st.expander("Pipeline approval"):
+        from jobhunter.ui.state import pipeline_apply_mode_label
+
+        st.caption(
+            "The search pipeline (Job Search page) never submits on its own unless you pick an approval mode here. "
+            "Default is review only."
+        )
+        _pipeline_modes = ["off", "human", "auto"]
+        _current_pipeline = saved.get("pipeline_apply_mode", settings.pipeline_apply_mode)
+        _pipeline_index = (
+            _pipeline_modes.index(_current_pipeline) if _current_pipeline in _pipeline_modes else 0
+        )
+        pipeline_apply_mode = st.selectbox(
+            "Pipeline apply mode",
+            options=_pipeline_modes,
+            index=_pipeline_index,
+            key="set_pipeline_mode",
+            format_func=lambda value: {
+                "off": "Review only — pipeline never submits",
+                "human": "Pre-fill forms, you submit",
+                "auto": "Auto-submit after verification",
+            }[value],
+        )
+        st.caption(pipeline_apply_mode_label(pipeline_apply_mode))
+        changed.update({"pipeline_apply_mode": pipeline_apply_mode})
+
+    with st.expander("Search configuration"):
+        st.caption("How the pipeline searches for jobs. Saved here or via .env — dashboard values win.")
+        fresher_only = st.checkbox(
+            "Fresher-only mode",
+            value=str(saved.get("fresher_only", settings.fresher_only)).lower()
+            in ("1", "true", "yes", "true"),
+            key="set_fresher_only",
+            help="Queries include 'fresher'; jobs requiring more than the configured years are skipped.",
+        )
+        max_experience_years = st.number_input(
+            "Max required experience (years)",
+            min_value=0,
+            max_value=10,
+            value=_int(saved.get("max_experience_years", settings.max_experience_years), 2),
+            key="set_max_exp_years",
+        )
+        query_variants = st.text_input(
+            "Query variants (comma-separated)",
+            value=saved.get("query_variants", settings.query_variants),
+            key="set_query_variants",
+            help="Rotated across continuous cycles, e.g. 'fresher,entry level,remote'.",
+        )
+        search_locations = st.text_input(
+            "Search locations (comma-separated)",
+            value=saved.get("search_locations", settings.search_locations),
+            key="set_search_locations",
+        )
+        search_max_concurrency = st.number_input(
+            "Search concurrency",
+            min_value=1,
+            max_value=8,
+            value=_int(saved.get("search_max_concurrency", settings.search_max_concurrency), 2),
+            key="set_search_concurrency",
+        )
+        score_max_workers = st.number_input(
+            "Scoring threads",
+            min_value=1,
+            max_value=16,
+            value=_int(saved.get("score_max_workers", settings.score_max_workers), 4),
+            key="set_score_workers",
+        )
+        fetch_full_descriptions = st.checkbox(
+            "Fetch full job descriptions",
+            value=str(saved.get("fetch_full_descriptions", settings.fetch_full_descriptions)).lower()
+            in ("1", "true", "yes"),
+            key="set_fetch_full",
+        )
+        fetch_full_description_max = st.number_input(
+            "Max full descriptions per search",
+            min_value=1,
+            max_value=20,
+            value=_int(saved.get("fetch_full_description_max", settings.fetch_full_description_max), 5),
+            key="set_fetch_full_max",
+        )
+        source_timeout_seconds = st.number_input(
+            "Per-source timeout (seconds)",
+            min_value=5.0,
+            max_value=300.0,
+            value=_float(saved.get("source_timeout_seconds", settings.source_timeout_seconds), 45.0),
+            key="set_source_timeout",
+        )
+        retry_max_attempts = st.number_input(
+            "Navigation retry attempts",
+            min_value=1,
+            max_value=5,
+            value=_int(saved.get("retry_max_attempts", settings.retry_max_attempts), 3),
+            key="set_retry_attempts",
+        )
+        changed.update(
+            {
+                "fresher_only": "true" if fresher_only else "false",
+                "max_experience_years": str(max_experience_years),
+                "query_variants": query_variants,
+                "search_locations": search_locations,
+                "search_max_concurrency": str(search_max_concurrency),
+                "score_max_workers": str(score_max_workers),
+                "fetch_full_descriptions": "true" if fetch_full_descriptions else "false",
+                "fetch_full_description_max": str(fetch_full_description_max),
+                "source_timeout_seconds": str(source_timeout_seconds),
+                "retry_max_attempts": str(retry_max_attempts),
             }
         )
 

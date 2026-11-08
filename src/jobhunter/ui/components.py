@@ -141,8 +141,8 @@ def render_results(result: dict[str, Any]) -> None:
     )
     scraped_jobs = [j for j in jobs if not j.get("is_portal_link")]
     if scraped_jobs:
-        for job in scraped_jobs:
-            _render_job_card(job)
+        for rank, job in enumerate(scraped_jobs, start=1):
+            _render_job_card(job, rank=rank)
     else:
         ui.empty_state(
             "No scraped jobs this run",
@@ -150,16 +150,29 @@ def render_results(result: dict[str, Any]) -> None:
             icon_name="search",
         )
 
-    ui.section("Applications", "What the agent submitted, skipped, or could not complete.")
+    ui.section("Applications", "What the agent submitted, skipped, or could not complete — with the reason.")
     if apps:
         for app in apps:
             status = app.get("status", "?")
-            status_class = {"applied": "applied", "already_applied": "skipped", "failed": "failed"}.get(
-                status, ""
-            )
-            label = {"applied": "Applied", "already_applied": "Skipped", "failed": "Failed"}.get(
-                status, status
-            )
+            status_class = {
+                "submitted": "applied",
+                "applied": "applied",
+                "already_applied": "skipped",
+                "needs_review": "skipped",
+                "failed": "failed",
+                "blocked": "failed",
+                "no_apply_button": "failed",
+            }.get(status, "")
+            label = {
+                "submitted": "Submitted",
+                "applied": "Applied",
+                "already_applied": "Skipped",
+                "needs_review": "Needs review",
+                "failed": "Failed",
+                "blocked": "Blocked",
+                "no_apply_button": "No apply button",
+            }.get(status, status)
+            detail = app.get("detail") or ""
             score = app.get("match_score")
             score_html = f" · {score}% match" if score else ""
             st.markdown(
@@ -167,7 +180,8 @@ def render_results(result: dict[str, Any]) -> None:
                 f'<div><span class="jh-status {status_class}">{escape(label)}</span> '
                 f"<strong>{escape(str(app.get('job_title', 'Untitled role')))}</strong>"
                 f'<span class="jh-job-meta"> @ {escape(str(app.get("company", "Unknown")))}'
-                f"{score_html}</span></div></div>",
+                f"{score_html}</span><br/>"
+                f'<span class="jh-job-meta">{escape(str(detail))}</span></div></div>',
                 unsafe_allow_html=True,
             )
     else:
@@ -187,11 +201,14 @@ def _render_portal_grid(portals: list[dict[str, Any]]) -> None:
     st.markdown(f'<div class="jh-portals">{tiles}</div>', unsafe_allow_html=True)
 
 
-def _render_job_card(job: dict[str, Any]) -> None:
+def _render_job_card(job: dict[str, Any], rank: int | None = None) -> None:
     """Render a single scored job card."""
     score = int(job.get("match_score") or 0)
     source = str(job.get("source", "unknown")).title()
     score_class = "high" if score >= 70 else ("mid" if score >= 40 else "low")
+    rank_html = f"<span class='jh-source'>#{rank}</span> " if rank else ""
+    eligibility = str(job.get("eligibility_decision") or "unreviewed")
+    discovery_only = bool(job.get("discovery_only"))
 
     skills_html = ""
     matched = job.get("matched_skills", []) or []
@@ -217,15 +234,59 @@ def _render_job_card(job: dict[str, Any]) -> None:
         if url
         else ""
     )
+    discovery_badge = ' · <span class="jh-source">discovery only</span>' if discovery_only else ""
 
     st.markdown(
         f'<div class="jh-job">'
         f'<div class="jh-job-top"><div>'
-        f'<div class="jh-job-title">{escape(str(job.get("title", "Untitled role")))}'
+        f'<div class="jh-job-title">{rank_html}{escape(str(job.get("title", "Untitled role")))}'
         f'<span class="jh-score {score_class}">{score}%</span></div>'
         f'<div class="jh-job-company">{escape(str(job.get("company", "")))}</div>'
         f'<div class="jh-job-meta">{escape(str(job.get("location", "India")))}'
-        f'{escape(salary)} · <span class="jh-source">{escape(source)}</span></div>'
+        f'{escape(salary)} · <span class="jh-source">{escape(source)}</span>'
+        f' · <span class="jh-source">{escape(eligibility)}</span>'
+        f"{discovery_badge}</div>"
         f"{skills_block}</div><div>{apply_html}</div></div></div>",
         unsafe_allow_html=True,
     )
+    _render_job_explanation(job)
+
+
+def _render_job_explanation(job: dict[str, Any]) -> None:
+    """Expandable audit trail: eligibility -> relevance -> application decision."""
+    with st.expander("Why this score & eligibility"):
+        eligibility_decision = job.get("eligibility_decision") or "unreviewed"
+        eligibility_status = job.get("eligibility_status") or "unknown"
+        st.markdown(
+            f"**Eligibility:** {escape(str(eligibility_status))} → `{escape(str(eligibility_decision))}`"
+        )
+        reasons = job.get("eligibility_reasons") or []
+        if reasons:
+            for reason in reasons:
+                st.markdown(f"- {escape(str(reason))}")
+        exposed = job.get("eligibility_exposed") or []
+        if exposed:
+            st.caption("Cannot be safely resolved (never guessed):")
+            for item in exposed:
+                st.markdown(f"- {escape(str(item))}")
+        relevance_decision = job.get("relevance_decision") or "unscored"
+        relevance_score = job.get("match_score")
+        explanation = job.get("relevance_explanation") or ""
+        st.markdown(
+            f"**Relevance:** `{escape(str(relevance_decision))}`"
+            + (f" · score {escape(str(relevance_score))}" if relevance_score is not None else "")
+        )
+        if explanation:
+            st.caption(str(explanation))
+        components = job.get("relevance_components") or []
+        if components:
+            for comp in components:
+                name = escape(str(comp.get("name", "?")))
+                weight = comp.get("weight")
+                cscore = comp.get("score")
+                detail = escape(str(comp.get("detail", "")))
+                st.markdown(f"- **{name}** (weight {weight}): {cscore} — {detail}")
+        if job.get("semantic_reason"):
+            st.markdown(
+                f"- **Semantic match:** {escape(str(job.get('semantic_score', '')))} — {escape(str(job.get('semantic_reason')))}"
+            )
