@@ -158,6 +158,12 @@ class Settings(BaseSettings):
     search_max_concurrency: int = 2
     # Max threads used to run LLM relevance refinement in parallel.
     score_max_workers: int = 4
+    # Hard per-source timeout in seconds; a source that exceeds it is treated
+    # as failed for this run and never blocks the other sources.
+    source_timeout_seconds: float = 45.0
+    # Bounded retries for navigation/browser operations.
+    retry_max_attempts: int = 3
+    retry_backoff_seconds: float = 2.0
 
     # Runtime paths and limits
     upload_dir: Path = PROJECT_ROOT / "uploads"

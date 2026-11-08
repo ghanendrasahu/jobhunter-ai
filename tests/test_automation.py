@@ -117,7 +117,7 @@ def test_apply_job_with_recovery_restarts_on_crash(monkeypatch):
     job = {"id": "j1", "title": "Dev", "company": "Acme", "url": "https://x.com/1"}
     calls = {"n": 0}
 
-    def flaky(session, portal, job, profile, mode, resume_pdf):
+    def flaky(session, portal, job, profile, mode, resume_pdf, resume_text=""):
         calls["n"] += 1
         if calls["n"] == 1:
             raise _ClosedError("Target page, context or browser has been closed")
@@ -140,7 +140,7 @@ def test_apply_job_with_recovery_gives_up_after_retries(monkeypatch):
     agent = ApplyAgent()
     calls = {"n": 0}
 
-    def always_crash(session, portal, job, profile, mode, resume_pdf):
+    def always_crash(session, portal, job, profile, mode, resume_pdf, resume_text=""):
         calls["n"] += 1
         raise _ClosedError("browser has been closed")
 
@@ -153,7 +153,7 @@ def test_apply_job_with_recovery_gives_up_after_retries(monkeypatch):
 def test_apply_job_with_recovery_rethrows_other_errors(monkeypatch):
     agent = ApplyAgent()
 
-    def boom(session, portal, job, profile, mode, resume_pdf):
+    def boom(session, portal, job, profile, mode, resume_pdf, resume_text=""):
         raise ValueError("bad form data")
 
     monkeypatch.setattr(agent, "_apply_to_job", boom)

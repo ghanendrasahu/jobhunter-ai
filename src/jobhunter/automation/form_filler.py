@@ -27,6 +27,7 @@ class FillStats(TypedDict):
     file_uploaded: bool
     missing: list[str]
 
+
 # field_name -> (aliases matched against normalized label/id/name/placeholder)
 _FIELD_ALIASES: dict[str, list[str]] = {
     "full_name": ["full name", "fullname", "name"],
@@ -162,16 +163,46 @@ def fill_form(page: Page, profile: dict, resume_pdf: str | None = None, qa=None)
             continue
         for handle in controls:
             try:
-                key = handle.evaluate("el => { const n = el.name || ''; const i = el.id || ''; return n + '|' + i; }")
+                key = handle.evaluate(
+                    "el => { const n = el.name || ''; const i = el.id || ''; return n + '|' + i; }"
+                )
             except Exception:
                 continue
             if key in seen_handles:
                 continue
             seen_handles.add(key)
-            if _fill_control(handle, profile, resume_pdf, stats, qa):
+            if _fill_control_guarded(handle, profile, resume_pdf, stats, qa):
                 stats["filled"] += 1
     stats["missing"] = sorted(set(stats["missing"]))
     return stats
+
+
+_STALE_MARKERS = (
+    "stale element",
+    "not attached",
+    "has been detached",
+    "element is not attached",
+    "detached from dom",
+)
+
+
+def _fill_control_guarded(handle, profile: dict, resume_pdf: str | None, stats: FillStats, qa=None) -> bool:
+    """Fill a control with one bounded retry on stale/detached elements.
+
+    A stale element is re-attempted once (the DOM may have re-rendered); any
+    other failure is swallowed to False exactly as before. Never loops.
+    """
+    for attempt in range(2):
+        try:
+            return _fill_control(handle, profile, resume_pdf, stats, qa)
+        except Exception as exc:
+            message = str(exc).lower()
+            if any(marker in message for marker in _STALE_MARKERS) and attempt == 0:
+                logger.debug("Stale element encountered; retrying once")
+                continue
+            logger.debug("Failed to fill control: %s", exc)
+            return False
+    return False
 
 
 def _fill_control(handle, profile: dict, resume_pdf: str | None, stats: FillStats, qa=None) -> bool:
@@ -203,8 +234,12 @@ def _fill_control(handle, profile: dict, resume_pdf: str | None, stats: FillStat
             ):
                 return True
         return False
-    if is_skippable(handle.get_attribute("id") or "", handle.get_attribute("name") or "",
-                    handle.get_attribute("placeholder") or "", text):
+    if is_skippable(
+        handle.get_attribute("id") or "",
+        handle.get_attribute("name") or "",
+        handle.get_attribute("placeholder") or "",
+        text,
+    ):
         stats["skipped"] += 1
         return False
 
@@ -264,7 +299,11 @@ def _fill_select(handle, profile: dict, field: str) -> bool:
         options = handle.evaluate("el => Array.from(el.options).map(o => o.text)")
         best = None
         for opt in options:
-            if normalize(opt) == normalize(value) or normalize(opt) in normalize(value) or normalize(value) in normalize(opt):
+            if (
+                normalize(opt) == normalize(value)
+                or normalize(opt) in normalize(value)
+                or normalize(value) in normalize(opt)
+            ):
                 best = opt
                 break
         if best is not None:
@@ -284,7 +323,11 @@ def _fill_from_qa(handle, tag: str, value: str) -> bool:
             options = handle.evaluate("el => Array.from(el.options).map(o => o.text)")
             best = None
             for opt in options:
-                if normalize(opt) == normalize(value) or normalize(opt) in normalize(value) or normalize(value) in normalize(opt):
+                if (
+                    normalize(opt) == normalize(value)
+                    or normalize(opt) in normalize(value)
+                    or normalize(value) in normalize(opt)
+                ):
                     best = opt
                     break
             if best is None:

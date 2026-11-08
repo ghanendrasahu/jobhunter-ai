@@ -10,6 +10,9 @@ real Chrome is used.
 from typing import Any
 
 import jobhunter.agent as agent
+from fakes import FakeSession as _FakeSession
+from fakes import agent_for as _agent_for
+from fakes import job as _job
 from jobhunter.agent import create_agent, run_job_hunter
 from jobhunter.automation.apply_agent import ApplyAgent
 from jobhunter.automation.apply_contract import (
@@ -43,31 +46,6 @@ def _state(**overrides) -> dict[str, Any]:
     return base
 
 
-def _job(**overrides) -> dict[str, Any]:
-    job = {
-        "id": "naukri-abc123",
-        "fingerprint": "fp-abc123",
-        "title": "Python Developer",
-        "company": "Acme",
-        "location": "Bengaluru",
-        "url": "https://www.naukri.com/job/abc123",
-        "source": "naukri",
-        "portal": "naukri",
-        "description": "Python, Docker, AWS experience required.",
-        "required_skills": ["Python"],
-        "preferred_skills": [],
-        "seniority": "UNKNOWN",
-        "discovery_only": False,
-        "eligibility_status": "eligible",
-        "eligibility_decision": "apply",
-        "eligibility_reasons": [],
-        "eligibility_exposed": [],
-        "eligibility_requirements": [],
-        "match_score": 80,
-        "relevance_decision": "apply",
-    }
-    job.update(overrides)
-    return job
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +178,7 @@ def _run_graph(sample_pdf, monkeypatch, jobs, pipeline_mode):
             semantic_reason="",
         )
 
-    monkeypatch.setattr(agent, "search_plan_jobs", lambda plan: jobs)
+    monkeypatch.setattr(agent, "search_plan_jobs", lambda plan, run_id=None: jobs)
     monkeypatch.setattr(agent, "send_job_alert_email", lambda *a, **k: None)
     monkeypatch.setattr(agent, "score_relevance", fake_score)
     settings = Settings(pipeline_apply_mode=pipeline_mode, max_applications_per_run=5)
@@ -349,39 +327,8 @@ def test_graph_skip_and_review_short_circuit_before_routing(sample_pdf, monkeypa
 # ---------------------------------------------------------------------------
 # ApplyAgent.apply_ranked_jobs (browser fully faked)
 # ---------------------------------------------------------------------------
-class _FakeSession:
-    def __init__(self, fail_start: Exception | None = None):
-        self.fail_start = fail_start
-        self.started = False
-        self.stopped = False
-        self.pages: list[object] = []
-
-    def start(self):
-        if self.fail_start is not None:
-            raise self.fail_start
-        self.started = True
-
-    def stop(self):
-        self.stopped = True
-
-    def new_tab(self):
-        page = object()
-        self.pages.append(page)
-        return page
-
-    def close_page(self, page):
-        pass
-
-    def close_all_pages(self):
-        self.pages.clear()
 
 
-def _agent_for(monkeypatch, session, settings=None):
-    agent_mod = __import__("jobhunter.automation.apply_agent", fromlist=["ApplyAgent"])
-    monkeypatch.setattr(agent_mod, "build_session", lambda settings_, allow_copied_fallback=False: session)
-    monkeypatch.setattr(agent_mod, "_default_llm", lambda: object())
-    agent = ApplyAgent(settings=settings or Settings(pipeline_apply_mode="auto"))
-    return agent
 
 
 UNIQUE = "phase7 unique resume text %s"
@@ -393,7 +340,7 @@ def test_ranked_jobs_respect_cap_and_preserve_order(monkeypatch):
     agent = _agent_for(monkeypatch, session, Settings(pipeline_apply_mode="auto", max_applications_per_run=2))
     attempts: list[str] = []
 
-    def fake_apply(self, s, portal, job, profile, mode, resume_pdf):
+    def fake_apply(self, s, portal, job, profile, mode, resume_pdf, resume_text=""):
         attempts.append(job["id"])
         return {
             "job_id": job["id"],
@@ -436,7 +383,7 @@ def test_ranked_jobs_skip_already_applied(monkeypatch):
     agent = _agent_for(monkeypatch, session)
     attempts: list[str] = []
 
-    def fake_apply(self, s, portal, job, profile, mode, resume_pdf):
+    def fake_apply(self, s, portal, job, profile, mode, resume_pdf, resume_text=""):
         attempts.append(job["id"])
         return {
             "job_id": job["id"],
@@ -494,7 +441,7 @@ def test_ranked_jobs_unverified_submission_not_marked_applied(monkeypatch):
     agent = _agent_for(monkeypatch, session)
     monkeypatch.setattr(ApplyAgent, "_ensure_login", lambda self, page, portal: True)
 
-    def fake_needs_review(self, s, portal, job, profile, mode, resume_pdf):
+    def fake_needs_review(self, s, portal, job, profile, mode, resume_pdf, resume_text=""):
         return {
             "job_id": job["id"],
             "title": job["title"],
@@ -558,7 +505,7 @@ def test_ranked_jobs_human_mode_hands_off_without_recording_applied(monkeypatch)
     agent = _agent_for(monkeypatch, session)
     monkeypatch.setattr(ApplyAgent, "_ensure_login", lambda self, page, portal: True)
 
-    def fake_handed_off(self, s, portal, job, profile, mode, resume_pdf):
+    def fake_handed_off(self, s, portal, job, profile, mode, resume_pdf, resume_text=""):
         return {
             "job_id": job["id"],
             "title": job["title"],
@@ -580,7 +527,7 @@ def test_ranked_jobs_returns_one_outcome_per_input_job(monkeypatch):
     agent = _agent_for(monkeypatch, session)
     monkeypatch.setattr(ApplyAgent, "_ensure_login", lambda self, page, portal: True)
 
-    def fake_submitted(self, s, portal, job, profile, mode, resume_pdf):
+    def fake_submitted(self, s, portal, job, profile, mode, resume_pdf, resume_text=""):
         return {
             "job_id": job["id"],
             "title": job["title"],

@@ -65,13 +65,19 @@ def _state(**overrides) -> dict[str, Any]:
 
 
 def _high_match_job() -> dict:
-    return {"id": "high", "title": "Python Developer",
-            "description": "Python required. Django preferred. 1-2 years experience."}
+    return {
+        "id": "high",
+        "title": "Python Developer",
+        "description": "Python required. Django preferred. 1-2 years experience.",
+    }
 
 
 def _low_match_job() -> dict:
-    return {"id": "low", "title": "Backend Engineer",
-            "description": "Python required. Go and Rust preferred."}
+    return {
+        "id": "low",
+        "title": "Backend Engineer",
+        "description": "Python required. Go and Rust preferred.",
+    }
 
 
 def _good_candidate() -> Candidate:
@@ -103,8 +109,10 @@ def test_eligible_low_match_ranks_lower():
 def test_role_family_mismatch_reduces_score_but_does_not_reject():
     job = _high_match_job()
     mismatch = Candidate(
-        experience_years=2, skills=["python", "django", "aws"],
-        seniority="ENTRY_LEVEL", role_family="data_science",
+        experience_years=2,
+        skills=["python", "django", "aws"],
+        seniority="ENTRY_LEVEL",
+        role_family="data_science",
     )
     matched = _good_candidate()
     mismatch_result = score_relevance(job, candidate=mismatch, llm=None)
@@ -118,12 +126,13 @@ def test_required_skill_weight_exceeds_preferred():
 
 
 def test_required_skill_match_outweighs_preferred_skill_match():
-    job = {"id": "r", "title": "Backend Engineer",
-           "description": "Python required. AWS preferred."}
-    only_required = Candidate(experience_years=2, skills=["python"], seniority="ENTRY_LEVEL",
-                              role_family="software")
-    both = Candidate(experience_years=2, skills=["python", "aws"], seniority="ENTRY_LEVEL",
-                     role_family="software")
+    job = {"id": "r", "title": "Backend Engineer", "description": "Python required. AWS preferred."}
+    only_required = Candidate(
+        experience_years=2, skills=["python"], seniority="ENTRY_LEVEL", role_family="software"
+    )
+    both = Candidate(
+        experience_years=2, skills=["python", "aws"], seniority="ENTRY_LEVEL", role_family="software"
+    )
     only_required_result = score_relevance(job, candidate=only_required, llm=None)
     both_result = score_relevance(job, candidate=both, llm=None)
     assert both_result.overall > only_required_result.overall  # preferred adds value
@@ -132,10 +141,8 @@ def test_required_skill_match_outweighs_preferred_skill_match():
 def test_preferred_only_knowledge_is_not_actionable():
     # Candidate knows ONLY a preferred skill (missing the required one): the
     # hard gate fails, so nothing is scored or applied.
-    job = {"id": "p", "title": "Backend Engineer",
-           "description": "Python required. AWS preferred."}
-    candidate = Candidate(experience_years=2, skills=["aws"], seniority="ENTRY_LEVEL",
-                          role_family="software")
+    job = {"id": "p", "title": "Backend Engineer", "description": "Python required. AWS preferred."}
+    candidate = Candidate(experience_years=2, skills=["aws"], seniority="ENTRY_LEVEL", role_family="software")
     eligibility = evaluate_eligibility(job, candidate=candidate)
     assert eligibility.decision == "skip"
     result = score_relevance(job, candidate=candidate, llm=FakeLLM("95"))
@@ -147,10 +154,8 @@ def test_preferred_only_knowledge_is_not_actionable():
 # UNKNOWN candidate information
 # ---------------------------------------------------------------------------
 def test_missing_candidate_info_does_not_hard_fail():
-    job = {"id": "u", "title": "Backend Engineer",
-           "description": "Python preferred."}
-    candidate = Candidate(experience_years=None, skills=[], seniority="UNKNOWN",
-                          role_family="")
+    job = {"id": "u", "title": "Backend Engineer", "description": "Python preferred."}
+    candidate = Candidate(experience_years=None, skills=[], seniority="UNKNOWN", role_family="")
     result = score_relevance(job, candidate=candidate, llm=None)
     assert result.decision == "apply"
     assert result.overall == 50  # all components neutral -> neutral default
@@ -168,8 +173,11 @@ def test_deterministic_scoring_with_llm_disabled():
 # Hard-gate protection
 # ---------------------------------------------------------------------------
 def test_hard_failed_job_never_receives_actionable_semantic_score():
-    job = {"id": "hard", "title": "Senior Data Engineer",
-           "description": "At least 9 years of experience required. Python required."}
+    job = {
+        "id": "hard",
+        "title": "Senior Data Engineer",
+        "description": "At least 9 years of experience required. Python required.",
+    }
     result = score_relevance(job, candidate=_fresher(), llm=FakeLLM("95"))
     assert result.overall == 0
     assert result.semantic_score is None
@@ -177,12 +185,17 @@ def test_hard_failed_job_never_receives_actionable_semantic_score():
 
 
 def test_ph5_failure_cannot_be_overridden_by_95_percent_semantic(monkeypatch):
-    jobs = [{
-        "id": "j1", "title": "Senior Data Engineer", "company": "Acme",
-        "semantic_score": 95, "match_score": 95,
-        "eligibility_decision": "skip",
-        "eligibility_reasons": ["Requires 9+ years of experience"],
-    }]
+    jobs = [
+        {
+            "id": "j1",
+            "title": "Senior Data Engineer",
+            "company": "Acme",
+            "semantic_score": 95,
+            "match_score": 95,
+            "eligibility_decision": "skip",
+            "eligibility_reasons": ["Requires 9+ years of experience"],
+        }
+    ]
     called = {"apply": False}
 
     def boom(job, resume):
@@ -198,10 +211,18 @@ def test_ph5_failure_cannot_be_overridden_by_95_percent_semantic(monkeypatch):
 
 def test_score_node_never_scores_skipped_jobs():
     jobs = [
-        {"id": "skip1", "title": "Senior", "description": "At least 9 years experience required.",
-         "eligibility_decision": "skip"},
-        {"id": "apply1", "title": "Junior", "description": "Python required.",
-         "eligibility_decision": "apply"},
+        {
+            "id": "skip1",
+            "title": "Senior",
+            "description": "At least 9 years experience required.",
+            "eligibility_decision": "skip",
+        },
+        {
+            "id": "apply1",
+            "title": "Junior",
+            "description": "Python required.",
+            "eligibility_decision": "apply",
+        },
     ]
     state = _state(resume_text="Python developer", candidate=_fresher(experience_years=1), jobs=jobs)
     out = agent._make_score_jobs(FakeLLM())(state)["jobs"]
@@ -248,25 +269,47 @@ def test_llm_garbage_refinement_ignored():
 def test_pipeline_scores_only_eligible_and_ranks(sample_pdf, monkeypatch):
     candidate = _good_candidate()
     jobs = [
-        {"id": "high", "title": "Python Developer", "company": "Acme",
-         "url": "https://x.com/high", "source": "indeed",
-         "description": "Python required. Django preferred. 1-2 years experience."},
-        {"id": "low", "title": "Backend Engineer", "company": "Corp",
-         "url": "https://x.com/low", "source": "linkedin",
-         "description": "Python required. Go and Rust preferred."},
-        {"id": "hard", "title": "Senior Data Engineer", "company": "BigCo",
-         "url": "https://x.com/hard", "source": "indeed",
-         "description": "At least 9 years of experience required. Python required."},
+        {
+            "id": "high",
+            "title": "Python Developer",
+            "company": "Acme",
+            "url": "https://x.com/high",
+            "source": "indeed",
+            "description": "Python required. Django preferred. 1-2 years experience.",
+        },
+        {
+            "id": "low",
+            "title": "Backend Engineer",
+            "company": "Corp",
+            "url": "https://x.com/low",
+            "source": "linkedin",
+            "description": "Python required. Go and Rust preferred.",
+        },
+        {
+            "id": "hard",
+            "title": "Senior Data Engineer",
+            "company": "BigCo",
+            "url": "https://x.com/hard",
+            "source": "indeed",
+            "description": "At least 9 years of experience required. Python required.",
+        },
     ]
 
     import jobhunter.automation.candidate as candidate_module
 
     monkeypatch.setattr(candidate_module, "build_candidate", lambda *a, **k: candidate)
-    monkeypatch.setattr(agent, "search_plan_jobs", lambda plan: jobs)
-    monkeypatch.setattr(agent, "apply_to_job", lambda job, resume: {
-        "job_id": job["id"], "job_title": job["title"], "company": job["company"],
-        "status": "applied", "detail": "ok",
-    })
+    monkeypatch.setattr(agent, "search_plan_jobs", lambda plan, run_id=None: jobs)
+    monkeypatch.setattr(
+        agent,
+        "apply_to_job",
+        lambda job, resume: {
+            "job_id": job["id"],
+            "job_title": job["title"],
+            "company": job["company"],
+            "status": "applied",
+            "detail": "ok",
+        },
+    )
     monkeypatch.setattr(agent, "send_job_alert_email", lambda *a, **k: None)
 
     result = run_job_hunter(str(sample_pdf), agent=create_agent(llm=FakeLLM()))

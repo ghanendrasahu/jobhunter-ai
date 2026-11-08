@@ -38,6 +38,7 @@ class JobHunterState(TypedDict):
     jobs: list[dict[str, Any]]
     applications: list[dict[str, Any]]
     error: str
+    run_id: str
 
 
 def _default_llm() -> ChatOpenAI:
@@ -159,8 +160,16 @@ def _make_find_jobs(llm: ChatOpenAI):
         if not query:
             return {**state, "error": "search_query missing – cannot search jobs"}
         try:
+            from jobhunter.storage.history import resume_id_from_text
+            from jobhunter.storage.run_state import record_event, update_run
+
             plan = build_search_plan(query, candidate=state.get("candidate"), settings=get_settings())
-            jobs = search_plan_jobs(plan)
+            jobs = search_plan_jobs(plan, run_id=state.get("run_id") or None)
+            if state.get("resume_text"):
+                update_run(
+                    state.get("run_id", ""), resume_id=resume_id_from_text(state["resume_text"]), query=query
+                )
+            record_event(state.get("run_id", ""), "info", "search", f"Found {len(jobs)} jobs for '{query}'")
             logger.info("Found %d jobs for query: %s", len(jobs), query)
             return {**state, "jobs": jobs, "error": ""}
         except Exception as exc:
@@ -416,6 +425,7 @@ def apply_jobs(state: JobHunterState) -> JobHunterState:
                 mode=pipeline_mode,
                 max_applications=settings.max_applications_per_run,
                 resume_pdf=state.get("file_path") or None,
+                run_id=state.get("run_id") or None,
             )
         except Exception as exc:
             logger.exception("Pipeline auto-apply failed")
@@ -456,6 +466,13 @@ def apply_jobs(state: JobHunterState) -> JobHunterState:
             slots[idx] = entry
 
     applications = [slot for slot in slots if slot is not None]
+    if state.get("run_id"):
+        from jobhunter.storage.run_state import record_application_event
+
+        for entry in applications:
+            record_application_event(
+                state["run_id"], entry, entry.get("status", "unknown"), entry.get("detail", "")
+            )
 
     logger.info("Recorded %d outcomes for %d jobs", len(applications), len(jobs))
 
@@ -505,8 +522,27 @@ def run_job_hunter(file_path: str, agent: Any = None) -> dict[str, Any]:
     """Execute the full pipeline for a resume PDF and return the final state.
 
     ``agent`` is optional for testing; defaults to the module-level compiled graph.
+
+    The run is persisted (``storage/run_state.py``): a run row is opened before
+    the graph executes, source metrics and application events are recorded as
+    the pipeline progresses, and the run is finished with a summary. Runs that
+    die without finishing are marked ``interrupted`` on the next start so a
+    crash can never silently re-apply jobs.
     """
+    from collections import Counter
+
+    from jobhunter.storage.history import resume_id_from_text
+    from jobhunter.storage.run_state import (
+        finish_run,
+        record_event,
+        recover_interrupted_runs,
+        start_run,
+    )
+
     logger.info("Starting JobHunter pipeline for %s", file_path)
+    recover_interrupted_runs()
+    settings = get_settings()
+    run_id = start_run(origin="pipeline", mode=settings.pipeline_apply_mode)
     compiled = agent or job_hunter_app
     initial_state: JobHunterState = {
         "file_path": file_path,
@@ -516,7 +552,31 @@ def run_job_hunter(file_path: str, agent: Any = None) -> dict[str, Any]:
         "jobs": [],
         "applications": [],
         "error": "",
+        "run_id": run_id,
     }
-    final_state = compiled.invoke(initial_state)
-    logger.info("JobHunter pipeline complete")
+    try:
+        final_state = compiled.invoke(initial_state)
+    except Exception:
+        try:
+            record_event(run_id, "error", "run", "Pipeline crashed")
+            finish_run(run_id, "failed", {"error": "pipeline crashed"})
+        except Exception:
+            logger.debug("Failed to record run failure", exc_info=True)
+        raise
+
+    status = "failed" if final_state.get("error") else "completed"
+    applications = final_state.get("applications", [])
+    by_status = Counter(a.get("status", "unknown") for a in applications)
+    summary: dict[str, Any] = {
+        "applications": {
+            "total": len(applications),
+            "by_status": dict(by_status.most_common()),
+            "submitted": sum(by_status[s] for s in ("applied", "submitted")),
+        },
+    }
+    resume_text = final_state.get("resume_text", "")
+    if resume_text:
+        summary["resume_id"] = resume_id_from_text(resume_text)
+    finish_run(run_id, status, summary)
+    logger.info("JobHunter pipeline complete (run %s: %s)", run_id, status)
     return dict(final_state)

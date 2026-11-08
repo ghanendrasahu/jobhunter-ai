@@ -46,7 +46,8 @@ def test_extract_resume_missing_path():
 
 def test_default_llm_prefers_groq_when_configured(monkeypatch):
     monkeypatch.setattr(
-        agent, "get_settings",
+        agent,
+        "get_settings",
         lambda: Settings(groq_api_key="gk-test", groq_model="llama-3.1-8b-instant"),
     )
     llm = agent._default_llm()
@@ -56,7 +57,8 @@ def test_default_llm_prefers_groq_when_configured(monkeypatch):
 
 def test_default_llm_falls_back_to_openai(monkeypatch):
     monkeypatch.setattr(
-        agent, "get_settings",
+        agent,
+        "get_settings",
         lambda: Settings(openai_api_key="sk-test", groq_api_key=""),
     )
     llm = agent._default_llm()
@@ -88,17 +90,37 @@ def test_generate_query_falls_back_when_llm_fails(sample_resume_text):
 
 def test_full_pipeline_happy_path(sample_pdf, monkeypatch):
     fake_jobs = [
-        {"id": "j1", "title": "Python Dev", "company": "Acme", "url": "https://x.com/j1",
-         "source": "indeed", "description": "Python required"},
-        {"id": "j2", "title": "Data Scientist", "company": "Corp", "url": "https://x.com/j2",
-         "source": "linkedin", "description": "Machine learning required"},
+        {
+            "id": "j1",
+            "title": "Python Dev",
+            "company": "Acme",
+            "url": "https://x.com/j1",
+            "source": "indeed",
+            "description": "Python required",
+        },
+        {
+            "id": "j2",
+            "title": "Data Scientist",
+            "company": "Corp",
+            "url": "https://x.com/j2",
+            "source": "linkedin",
+            "description": "Machine learning required",
+        },
     ]
 
-    monkeypatch.setattr(agent, "search_plan_jobs", lambda plan: fake_jobs)
-    monkeypatch.setattr(agent, "apply_to_job", lambda job, resume: {
-        "job_id": job["id"], "job_title": job["title"], "company": job["company"],
-        "status": "applied", "detail": "ok", "match_score": job.get("match_score"),
-    })
+    monkeypatch.setattr(agent, "search_plan_jobs", lambda plan, run_id=None: fake_jobs)
+    monkeypatch.setattr(
+        agent,
+        "apply_to_job",
+        lambda job, resume: {
+            "job_id": job["id"],
+            "job_title": job["title"],
+            "company": job["company"],
+            "status": "applied",
+            "detail": "ok",
+            "match_score": job.get("match_score"),
+        },
+    )
     monkeypatch.setattr(agent, "send_job_alert_email", lambda *a, **k: None)
 
     result = run_job_hunter(str(sample_pdf), agent=create_agent(llm=FakeLLM()))

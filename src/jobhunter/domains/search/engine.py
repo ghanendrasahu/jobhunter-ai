@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 
 import jobhunter.domains.search.sources as _sources  # noqa: F401  # registers bundled sources
 from jobhunter.config import get_settings
@@ -41,25 +42,59 @@ def _wrap(jobs: list[Job]) -> list[dict]:
 _API_SOURCES = (search_adzuna_jobs, search_jooble_jobs, search_jsearch_jobs)
 
 
-async def _search_sources_async(query: str, location: str = "India") -> list[Job]:
+def _source_name(source) -> str:
+    return getattr(source, "source_name", None) or source.__class__.__name__
+
+
+async def _search_sources_async(
+    query: str,
+    location: str = "India",
+    run_id: str | None = None,
+) -> list[Job]:
     """Search every registered source plus the optional API sources for one query.
 
-    Each source may fail independently; failures are logged and never break the
-    overall search. Returns raw (un-deduplicated) :class:`Job` objects.
+    Each source runs under its own hard timeout (``source_timeout_seconds``)
+    and may fail independently; failures and timeouts are logged, recorded as
+    run metrics when ``run_id`` is given, and never break the overall search.
+    Returns raw (un-deduplicated) :class:`Job` objects.
     """
+    from jobhunter.storage.run_state import record_source_metric
+
+    timeout = float(get_settings().source_timeout_seconds)
+
+    async def _run_source(source) -> list:
+        name = _source_name(source)
+        started = time.monotonic()
+        failed = False
+        try:
+            result = await asyncio.wait_for(source.search(query, location=location), timeout=timeout)
+        except Exception as exc:
+            logger.warning("Source %s failed or timed out after %.1fs: %s", name, timeout, exc)
+            result = []
+            failed = True
+        duration_ms = int((time.monotonic() - started) * 1000)
+        jobs: list = []
+        if isinstance(result, list):
+            jobs = result
+        if run_id:
+            record_source_metric(run_id, name, found=len(jobs), failed=failed, duration_ms=duration_ms)
+        return jobs
+
     all_jobs: list[Job] = []
     sources = active_sources()
-    results = await asyncio.gather(
-        *[source.search(query, location=location) for source in sources],
-        return_exceptions=True,
-    )
-    for result in results:
+    results = await asyncio.gather(*[_run_source(source) for source in sources], return_exceptions=True)
+    for source, result in zip(sources, results, strict=True):
+        if isinstance(result, BaseException):
+            logger.warning("Source %s crashed: %s", _source_name(source), result)
+            if run_id:
+                record_source_metric(run_id, _source_name(source), failed=True)
+            continue
         if isinstance(result, list) and result:
             if isinstance(result[0], Job):
                 all_jobs.extend(result)
             else:
                 all_jobs.extend(Job.from_dict(job) for job in result)
-            logger.info("Scraped %d jobs", len(result))
+            logger.info("Source %s returned %d jobs", _source_name(source), len(result))
 
     # Third-party APIs block on the network; run them off the event loop and
     # concurrently instead of serially so slow hosts don't stack up.
@@ -68,9 +103,14 @@ async def _search_sources_async(query: str, location: str = "India") -> list[Job
         return_exceptions=True,
     )
     for api_fn, api_result in zip(_API_SOURCES, api_results, strict=True):
+        name = getattr(api_fn, "__name__", api_fn)
         if isinstance(api_result, BaseException):
-            logger.warning("API source %s failed: %s", getattr(api_fn, "__name__", api_fn), api_result)
+            logger.warning("API source %s failed: %s", name, api_result)
+            if run_id:
+                record_source_metric(run_id, str(name), failed=True)
         elif api_result:
+            if run_id:
+                record_source_metric(run_id, str(name), found=len(api_result))
             all_jobs.extend(Job.from_dict(job) for job in api_result)
     return all_jobs
 
@@ -90,6 +130,7 @@ async def search_all_jobs_async(
     query: str,
     location: str = "India",
     include_portals: bool = True,
+    run_id: str | None = None,
 ) -> list[dict]:
     """Search every configured source for ``query`` and return deduplicated results.
 
@@ -99,17 +140,15 @@ async def search_all_jobs_async(
     3. Third-party API results (only when keys are configured).
     4. Optionally refresh full descriptions for snippets that are too thin.
     """
-    all_jobs: list[Job] = (
-        [Job.from_dict(job) for job in build_portal_urls(query)] if include_portals else []
-    )
-    all_jobs.extend(await _search_sources_async(query, location=location))
+    all_jobs: list[Job] = [Job.from_dict(job) for job in build_portal_urls(query)] if include_portals else []
+    all_jobs.extend(await _search_sources_async(query, location=location, run_id=run_id))
     all_jobs = dedupe_jobs(all_jobs)
     _refresh_descriptions(all_jobs)
     logger.info("Total %d jobs for query '%s'", len(all_jobs), query)
     return _wrap(all_jobs)
 
 
-async def search_plan_jobs_async(plan) -> list[dict]:
+async def search_plan_jobs_async(plan, run_id: str | None = None) -> list[dict]:
     """Run every ``(query, location)`` in ``plan`` and deduplicate the combined results.
 
     Portal links are emitted once from the plan's base query so repeated queries
@@ -126,7 +165,7 @@ async def search_plan_jobs_async(plan) -> list[dict]:
 
         async def _search_one(search) -> list[Job]:
             async with semaphore:
-                return await _search_sources_async(search.query, location=search.location)
+                return await _search_sources_async(search.query, location=search.location, run_id=run_id)
 
         batches = await asyncio.gather(*(_search_one(search) for search in queries))
         for batch in batches:
@@ -136,7 +175,9 @@ async def search_plan_jobs_async(plan) -> list[dict]:
     _refresh_descriptions(all_jobs)
     logger.info(
         "Total %d jobs across %d planned queries for '%s'",
-        len(all_jobs), plan.unique_queries, plan.base_query,
+        len(all_jobs),
+        plan.unique_queries,
+        plan.base_query,
     )
     return _wrap(all_jobs)
 
@@ -167,11 +208,11 @@ def _run_in_loop(coro) -> list[dict]:
     return result
 
 
-def search_all_jobs(query: str, location: str = "India") -> list[dict]:
+def search_all_jobs(query: str, location: str = "India", run_id: str | None = None) -> list[dict]:
     """Synchronous wrapper around :func:`search_all_jobs_async`."""
-    return _run_in_loop(search_all_jobs_async(query, location=location))
+    return _run_in_loop(search_all_jobs_async(query, location=location, run_id=run_id))
 
 
-def search_plan_jobs(plan) -> list[dict]:
+def search_plan_jobs(plan, run_id: str | None = None) -> list[dict]:
     """Synchronous wrapper around :func:`search_plan_jobs_async`."""
-    return _run_in_loop(search_plan_jobs_async(plan))
+    return _run_in_loop(search_plan_jobs_async(plan, run_id=run_id))

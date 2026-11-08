@@ -37,11 +37,23 @@ from jobhunter.automation.strategies import fill_input
 from jobhunter.config import Settings, get_settings
 from jobhunter.domains.eligibility import evaluate_eligibility
 from jobhunter.domains.search.plan import _FRESHER_TERMS, dedupe_fresher_terms
+from jobhunter.services.retry import call_bounded
 from jobhunter.storage.history import (
     _already_submitted,
     load_applied_jobs,
     record_application_outcome,
+    resume_id_from_text,
     save_applied_jobs,
+)
+from jobhunter.storage.run_state import (
+    clear_submission_attempt,
+    finish_run,
+    has_submission_attempt,
+    mark_submission_attempt,
+    record_application_event,
+    record_event,
+    recover_interrupted_runs,
+    start_run,
 )
 
 logger = logging.getLogger(__name__)
@@ -98,6 +110,7 @@ class ApplyAgent:
         self._cycle_budget: int = 5
         self._cooldown: int = 300
         self._prioritize_remote: bool = True
+        self._run_id: str = ""
 
     # ------------------------------------------------------------------ public
     def run(
@@ -132,6 +145,14 @@ class ApplyAgent:
 
         max_applications = max_applications or self.settings.max_applications_per_run
         portals = [p for p in (portals or ["naukri", "indeed"]) if p in strategies.PORTALS]
+        recover_interrupted_runs()
+        self._run_id = start_run(
+            origin="apply_agent",
+            resume_id=resume_id_from_text(resume_text) if resume_text else "",
+            query=query,
+            mode=mode,
+            portals=list(portals),
+        )
         profile = profile or profile_from_resume(resume_text)
         self._on_status = on_status
         self._llm = _default_llm()
@@ -185,6 +206,14 @@ class ApplyAgent:
                     session.stop()
                 except Exception:
                     pass
+                finish_run(
+                    self._run_id,
+                    "failed",
+                    {
+                        "error": "dedicated_browser_unavailable",
+                        "applications": {"total": 0, "by_status": {}},
+                    },
+                )
                 return {"results": [], "log": self._log, "mode": mode, "error": str(exc)}
             if session.using_cdp and session.using_dedicated_profile:
                 if session.reused_existing:
@@ -238,6 +267,13 @@ class ApplyAgent:
                             candidate,
                         )
                         results.extend(outcomes)
+                        for outcome in outcomes:
+                            record_application_event(
+                                self._run_id,
+                                outcome,
+                                outcome.get("status", "unknown"),
+                                outcome.get("detail", ""),
+                            )
                     except Exception as exc:
                         logger.exception("Portal %s failed", portal)
                         self._report("error", portal, f"Failed: {exc}")
@@ -267,6 +303,22 @@ class ApplyAgent:
             self._report(
                 "info", "browser", "Browser disconnected — the dedicated window stays open for the next run."
             )
+            if self._run_id:
+                counts: dict[str, int] = {}
+                for outcome in results:
+                    key = outcome.get("status", "unknown")
+                    counts[key] = counts.get(key, 0) + 1
+                finish_run(
+                    self._run_id,
+                    "interrupted" if self._stop_event.is_set() else "completed",
+                    {
+                        "applications": {
+                            "total": len(results),
+                            "by_status": counts,
+                            "submitted": counts.get("submitted", 0) + counts.get("applied", 0),
+                        }
+                    },
+                )
 
         return {"results": results, "log": self._log, "mode": mode, "cycles": cycle}
 
@@ -306,6 +358,7 @@ class ApplyAgent:
         max_applications: int | None = None,
         resume_pdf: str | None = None,
         on_status: StatusCallback | None = None,
+        run_id: str | None = None,
     ) -> list[dict]:
         """Apply to a pre-ranked, pre-eligible job list (the LangGraph pipeline's jobs).
 
@@ -326,6 +379,22 @@ class ApplyAgent:
         profile = profile or profile_from_resume(resume_text)
         candidate = candidate or (build_candidate(resume_text, profile=profile) if resume_text else None)
         self._qa = QAMemory(llm=self._llm, candidate=candidate, profile=profile)
+
+        # When the caller (the LangGraph pipeline) passes its run_id, events are
+        # recorded into it and lifecycle is owned by the caller. Standalone
+        # callers get their own run row, recovered on crash and finished here.
+        own_run = run_id is None
+        if mode != "off" and own_run:
+            recover_interrupted_runs()
+            portals_involved = sorted({p for p in (apply_portal_for(j) for j in jobs) if p})
+            run_id = start_run(
+                origin="pipeline_apply",
+                resume_id=resume_id_from_text(resume_text) if resume_text else "",
+                query="apply_ranked_jobs",
+                mode=mode,
+                portals=portals_involved,
+            )
+        self._run_id = run_id or ""
 
         if mode == "off":
             self._report("info", "config", "Pipeline auto-apply disabled (mode=off) — nothing submitted.")
@@ -359,6 +428,15 @@ class ApplyAgent:
                     session.stop()
                 except Exception:
                     pass
+                if own_run:
+                    finish_run(
+                        self._run_id,
+                        "failed",
+                        {
+                            "error": "dedicated_browser_unavailable",
+                            "applications": {"total": 0, "by_status": {}},
+                        },
+                    )
                 return [
                     {
                         **self._base_outcome(job),
@@ -435,6 +513,16 @@ class ApplyAgent:
                         }
                     )
                     continue
+                if job_id and has_submission_attempt(resume_text, job_id):
+                    outcomes.append(
+                        {
+                            **base,
+                            "status": "needs_review",
+                            "detail": "A previous run may have submitted this job (crash before "
+                            "verification) — verify in the portal; never auto-retried.",
+                        }
+                    )
+                    continue
                 if self.settings.fresher_only:
                     required = strategies.job_experience_years(job)
                     if required is not None and required > self.settings.max_experience_years:
@@ -476,14 +564,26 @@ class ApplyAgent:
                     )
                     continue
                 attempts += 1  # counts every apply attempt, keeping the run bounded
-                outcome = self._apply_job_with_recovery(
-                    session,
-                    route,
-                    job,
-                    profile,
-                    mode,
-                    resume_pdf,
-                )
+                try:
+                    outcome = self._apply_job_with_recovery(
+                        session,
+                        route,
+                        job,
+                        profile,
+                        mode,
+                        resume_pdf,
+                        resume_text=resume_text,
+                    )
+                except Exception as exc:
+                    # A non-browser coding/logic error must not abort the rest
+                    # of the batch; record it and move on.
+                    logger.exception("Application attempt crashed for job %s", job.get("id"))
+                    outcome = {
+                        **self._base_outcome(job),
+                        "status": "failed",
+                        "detail": f"Application attempt crashed: {exc}",
+                    }
+                    self._record_outcome(resume_text, job, outcome)
                 if outcome.get("status") == "submitted":
                     # Only a truly submitted application marks the job as applied;
                     # everything else stays eligible for a later run.
@@ -495,6 +595,29 @@ class ApplyAgent:
                 else:
                     self._record_outcome(resume_text, job, outcome)
                 outcomes.append(outcome)
+            if own_run:
+                for outcome in outcomes:
+                    record_application_event(
+                        self._run_id,
+                        outcome,
+                        outcome.get("status", "unknown"),
+                        outcome.get("detail", ""),
+                    )
+                counts: dict[str, int] = {}
+                for outcome in outcomes:
+                    key = outcome.get("status", "unknown")
+                    counts[key] = counts.get(key, 0) + 1
+                finish_run(
+                    self._run_id,
+                    "interrupted" if self._stop_event.is_set() else "completed",
+                    {
+                        "applications": {
+                            "total": len(outcomes),
+                            "by_status": counts,
+                            "submitted": counts.get("submitted", 0) + counts.get("applied", 0),
+                        }
+                    },
+                )
             return outcomes
         finally:
             try:
@@ -531,7 +654,11 @@ class ApplyAgent:
 
         self._report("info", portal, f"Searching '{query}'")
         try:
-            self._goto(page, strategies.build_search_url(portal, query))
+            self._goto(
+                page,
+                strategies.build_search_url(portal, query),
+                retries=self.settings.retry_max_attempts,
+            )
         except Exception as exc:
             self._report("error", portal, f"Could not open search page: {exc}")
             session.close_page(page)
@@ -571,6 +698,21 @@ class ApplyAgent:
                 )
                 continue
 
+            if job_id and has_submission_attempt(resume_text, job_id):
+                self._report(
+                    "warning",
+                    portal,
+                    f"REVIEW {job.get('title', '?')} @ {job.get('company', '?')} — previous submit attempt unverified",
+                )
+                self._record_outcome(
+                    resume_text,
+                    job,
+                    {
+                        "status": "needs_review",
+                        "detail": "A previous run may have submitted this job (crash before verification) — verify in the portal; never auto-retried.",
+                    },
+                )
+                continue
             ok, reason = self._should_attempt_apply(portal, job)
             if not ok:
                 self._report("warning", portal, f"SKIP {job.get('title', '?')} — {reason}")
@@ -629,7 +771,9 @@ class ApplyAgent:
                 continue
 
             attempts += 1  # counts every apply attempt, keeping the run bounded
-            outcome = self._apply_job_with_recovery(session, portal, job, profile, mode, resume_pdf)
+            outcome = self._apply_job_with_recovery(
+                session, portal, job, profile, mode, resume_pdf, resume_text=resume_text
+            )
             outcome["evaluation"] = evaluation
             outcomes.append(outcome)
 
@@ -657,26 +801,29 @@ class ApplyAgent:
 
     @staticmethod
     def _goto(page, url: str, timeout: int = 45000, retries: int = 3) -> None:
-        """Navigate with retries to survive navigation races (Naukri redirects/lightboxes)."""
-        last_error: Exception | None = None
-        for attempt in range(retries):
+        """Navigate with bounded retries to survive navigation races.
+
+        Retries are hard-capped (``retries``); the last error is raised so
+        failures are observable, never silently swallowed.
+        """
+
+        def _attempt() -> None:
+            page.goto(url, timeout=timeout, wait_until="domcontentloaded")
+
+        def _on_retry(attempt: int, exc: BaseException) -> None:
+            logger.warning(
+                "Navigation to %s failed on attempt %d/%d: %s",
+                url,
+                attempt,
+                retries,
+                exc,
+            )
             try:
-                page.goto(url, timeout=timeout, wait_until="domcontentloaded")
-                return
-            except Exception as exc:
-                last_error = exc
-                logger.warning(
-                    "Navigation to %s failed on attempt %d/%d: %s",
-                    url,
-                    attempt + 1,
-                    retries,
-                    exc,
-                )
-                try:
-                    page.wait_for_timeout(2500)
-                except Exception:
-                    return
-        raise last_error  # type: ignore[misc]  # mypy can't prove non-None here
+                page.wait_for_timeout(2500)
+            except Exception:
+                logger.debug("Page wait interrupted during navigation retry", exc_info=True)
+
+        call_bounded(_attempt, attempts=retries, retryable=(Exception,), on_retry=_on_retry)
 
     def _apply_to_job(
         self,
@@ -686,6 +833,7 @@ class ApplyAgent:
         profile: dict,
         mode: str,
         resume_pdf: str | None,
+        resume_text: str = "",
     ) -> dict:
         base = {
             "job_id": job.get("id", "unknown"),
@@ -696,7 +844,7 @@ class ApplyAgent:
 
         job_page = session.new_tab()
         try:
-            self._goto(job_page, job.get("url", ""))
+            self._goto(job_page, job.get("url", ""), retries=self.settings.retry_max_attempts)
         except Exception as exc:
             session.close_page(job_page)
             return {**base, "status": "failed", "detail": f"Could not open job page: {exc}"}
@@ -752,9 +900,23 @@ class ApplyAgent:
                 "filled_fields": stats,
             }
         else:
-            clicked = self._submit_and_advance(form_page, profile, resume_pdf)
-            verified = _verify_submission(form_page) if clicked else "unknown"
-            result = self._submit_outcome(base, stats, clicked, verified)
+            job_id = str(job.get("id") or "")
+            if resume_text and job_id and has_submission_attempt(resume_text, job_id):
+                result = {
+                    **base,
+                    "status": "needs_review",
+                    "detail": "A previous run may have submitted this job (crash before "
+                    "verification) — verify in the portal; never auto-retried.",
+                    "filled_fields": stats,
+                }
+            else:
+                if resume_text and job_id:
+                    mark_submission_attempt(resume_text, job)
+                clicked = self._submit_and_advance(form_page, profile, resume_pdf)
+                verified = _verify_submission(form_page) if clicked else "unknown"
+                result = self._submit_outcome(base, stats, clicked, verified)
+                if resume_text and job_id and result["status"] in ("submitted", "failed"):
+                    clear_submission_attempt(resume_text, job_id)
 
         try:
             session.close_page(form_page)
@@ -772,6 +934,7 @@ class ApplyAgent:
         mode: str,
         resume_pdf: str | None,
         retries: int = 2,
+        resume_text: str = "",
     ) -> dict:
         """Apply to one job, recovering from a browser crash with bounded retries.
 
@@ -783,7 +946,9 @@ class ApplyAgent:
         last_error: Exception | None = None
         for attempt in range(retries):
             try:
-                return self._apply_to_job(session, portal, job, profile, mode, resume_pdf)
+                return self._apply_to_job(
+                    session, portal, job, profile, mode, resume_pdf, resume_text=resume_text
+                )
             except Exception as exc:
                 if not _browser_crashed(exc):
                     raise
@@ -1089,6 +1254,7 @@ class ApplyAgent:
         entry = {"level": level, "stage": stage, "message": message}
         self._log.append(entry)
         logger.info("[%s] %s: %s", level, stage, message)
+        record_event(self._run_id, level, stage, message)
         if self._on_status is not None:
             try:
                 self._on_status(level, stage, message)
@@ -1133,7 +1299,19 @@ def _browser_crashed(exc: Exception) -> bool:
         pass
     text = str(exc).lower()
     return any(
-        marker in text for marker in ("has been closed", "target closed", "context closed", "browser closed")
+        marker in text
+        for marker in (
+            "has been closed",
+            "target closed",
+            "context closed",
+            "browser closed",
+            "protocol error",
+            "websocket error",
+            "websocket is closed",
+            "websocket disconnected",
+            "connect_over_cdp",
+            "connection closed",
+        )
     )
 
 

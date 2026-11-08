@@ -62,18 +62,20 @@ def _fresher(**overrides) -> Candidate:
 # Experience rules
 # ---------------------------------------------------------------------------
 def test_fresher_vs_five_years_hard_fails():
-    job = {"title": "Senior Data Engineer",
-           "description": "At least 5 years of experience required. Python required."}
+    job = {
+        "title": "Senior Data Engineer",
+        "description": "At least 5 years of experience required. Python required.",
+    }
     result = evaluate_eligibility(job, candidate=_fresher())
     assert result.status == NOT_ELIGIBLE
     assert result.decision == "skip"
-    assert any(r.kind == "experience_years" and r.level == "required" and r.met is False
-               for r in result.requirements)
+    assert any(
+        r.kind == "experience_years" and r.level == "required" and r.met is False for r in result.requirements
+    )
 
 
 def test_senior_title_without_exp_requirement_inspects_not_rejects():
-    job = {"title": "Senior Python Developer",
-           "description": "Build APIs with FastAPI. Python required."}
+    job = {"title": "Senior Python Developer", "description": "Build APIs with FastAPI. Python required."}
     result = evaluate_eligibility(job, candidate=_fresher())
     assert result.status == INSPECT
     assert result.decision == "review"
@@ -81,16 +83,17 @@ def test_senior_title_without_exp_requirement_inspects_not_rejects():
 
 
 def test_senior_title_fresher_friendly_is_eligible():
-    job = {"title": "Senior Software Engineer",
-           "description": "Entry level, fresher friendly. Python required."}
+    job = {
+        "title": "Senior Software Engineer",
+        "description": "Entry level, fresher friendly. Python required.",
+    }
     result = evaluate_eligibility(job, candidate=_fresher())
     assert result.status == "eligible"
     assert result.decision == "apply"
 
 
 def test_junior_entry_level_eligible():
-    job = {"title": "Junior Developer",
-           "description": "Python required. 1-2 years experience."}
+    job = {"title": "Junior Developer", "description": "Python required. 1-2 years experience."}
     candidate = Candidate(experience_years=2, skills=["python"], seniority="ENTRY_LEVEL")
     result = evaluate_eligibility(job, candidate=candidate)
     assert result.status == "eligible"
@@ -98,8 +101,10 @@ def test_junior_entry_level_eligible():
 
 
 def test_required_vs_preferred_experience():
-    job = {"title": "Backend Engineer",
-           "description": "Requirements: 3 years experience, Python. Preferred: 5+ years, AWS."}
+    job = {
+        "title": "Backend Engineer",
+        "description": "Requirements: 3 years experience, Python. Preferred: 5+ years, AWS.",
+    }
     candidate = Candidate(experience_years=4, skills=["python", "aws"], seniority="JUNIOR")
     result = evaluate_eligibility(job, candidate=candidate)
     assert result.status == "eligible"
@@ -160,8 +165,10 @@ def test_llm_split_is_validated_against_vocabulary():
 # UNKNOWN is never guessed
 # ---------------------------------------------------------------------------
 def test_unknown_experience_is_never_treated_as_zero():
-    job = {"title": "Backend Engineer",
-           "description": "At least 5 years of experience required. Python required."}
+    job = {
+        "title": "Backend Engineer",
+        "description": "At least 5 years of experience required. Python required.",
+    }
     candidate = Candidate(experience_years=None, skills=["python"], seniority=UNKNOWN_SENIORITY)
     result = evaluate_eligibility(job, candidate=candidate)
     assert result.status == WAITING_FOR_USER
@@ -171,8 +178,10 @@ def test_unknown_experience_is_never_treated_as_zero():
 
 
 def test_unknown_mandatory_criterion_waits_for_user():
-    job = {"title": "Backend Engineer",
-           "description": "Python required. At least 5 years of experience required."}
+    job = {
+        "title": "Backend Engineer",
+        "description": "Python required. At least 5 years of experience required.",
+    }
     result = evaluate_eligibility(job, candidate=None)
     assert result.status == WAITING_FOR_USER
     assert result.decision == "review"
@@ -180,8 +189,10 @@ def test_unknown_mandatory_criterion_waits_for_user():
 
 
 def test_contradictory_requirements_needs_review():
-    job = {"title": "Backend Engineer",
-           "description": "At least 3 years experience. At least 8 years experience."}
+    job = {
+        "title": "Backend Engineer",
+        "description": "At least 3 years experience. At least 8 years experience.",
+    }
     result = evaluate_eligibility(job, candidate=_fresher(experience_years=5))
     assert result.status == WAITING_FOR_USER
     assert result.decision == "review"
@@ -216,8 +227,9 @@ def test_role_family_mismatch_is_soft_not_hard():
 
 def test_role_family_match_is_soft_pass():
     job = {"title": "ML Engineer", "description": "Python required. 2+ years experience."}
-    candidate = Candidate(experience_years=3, skills=["python"], seniority="JUNIOR",
-                          role_family="data_science")
+    candidate = Candidate(
+        experience_years=3, skills=["python"], seniority="JUNIOR", role_family="data_science"
+    )
     result = evaluate_eligibility(job, candidate=candidate)
     assert result.status == "eligible"
 
@@ -257,10 +269,18 @@ def test_seniority_classification_taxonomy():
 # ---------------------------------------------------------------------------
 def test_score_node_only_scores_eligible_jobs():
     jobs = [
-        {"id": "skip1", "title": "Senior", "description": "At least 9 years experience required.",
-         "eligibility_decision": "skip"},
-        {"id": "apply1", "title": "Junior", "description": "Python required.",
-         "eligibility_decision": "apply"},
+        {
+            "id": "skip1",
+            "title": "Senior",
+            "description": "At least 9 years experience required.",
+            "eligibility_decision": "skip",
+        },
+        {
+            "id": "apply1",
+            "title": "Junior",
+            "description": "Python required.",
+            "eligibility_decision": "apply",
+        },
     ]
     state = _state(resume_text="Python developer", jobs=jobs)
     node = agent._make_score_jobs(FakeLLM())
@@ -272,12 +292,17 @@ def test_score_node_only_scores_eligible_jobs():
 
 
 def test_semantic_score_never_overrides_hard_fail(monkeypatch):
-    jobs = [{
-        "id": "j1", "title": "Senior Data Engineer", "company": "Acme",
-        "semantic_score": 95, "match_score": 95,
-        "eligibility_decision": "skip",
-        "eligibility_reasons": ["Requires 5+ years of experience; candidate has 0"],
-    }]
+    jobs = [
+        {
+            "id": "j1",
+            "title": "Senior Data Engineer",
+            "company": "Acme",
+            "semantic_score": 95,
+            "match_score": 95,
+            "eligibility_decision": "skip",
+            "eligibility_reasons": ["Requires 5+ years of experience; candidate has 0"],
+        }
+    ]
     called = {"apply": False}
 
     def boom(job, resume):
@@ -293,25 +318,41 @@ def test_semantic_score_never_overrides_hard_fail(monkeypatch):
 
 
 def test_pipeline_orders_eligibility_before_scoring_and_apply(sample_pdf, monkeypatch):
-    entry = Candidate(experience_years=2, skills=["python"], seniority="ENTRY_LEVEL",
-                      role_family="software")
+    entry = Candidate(experience_years=2, skills=["python"], seniority="ENTRY_LEVEL", role_family="software")
     jobs = [
-        {"id": "hard", "title": "Senior Data Engineer", "company": "Acme",
-         "url": "https://x.com/hard", "source": "indeed",
-         "description": "At least 5 years of experience required. Python required."},
-        {"id": "ok", "title": "Junior Developer", "company": "Corp",
-         "url": "https://x.com/ok", "source": "linkedin",
-         "description": "Python required. 1-2 years experience."},
+        {
+            "id": "hard",
+            "title": "Senior Data Engineer",
+            "company": "Acme",
+            "url": "https://x.com/hard",
+            "source": "indeed",
+            "description": "At least 5 years of experience required. Python required.",
+        },
+        {
+            "id": "ok",
+            "title": "Junior Developer",
+            "company": "Corp",
+            "url": "https://x.com/ok",
+            "source": "linkedin",
+            "description": "Python required. 1-2 years experience.",
+        },
     ]
 
     import jobhunter.automation.candidate as candidate_module
 
     monkeypatch.setattr(candidate_module, "build_candidate", lambda *a, **k: entry)
-    monkeypatch.setattr(agent, "search_plan_jobs", lambda plan: jobs)
-    monkeypatch.setattr(agent, "apply_to_job", lambda job, resume: {
-        "job_id": job["id"], "job_title": job["title"], "company": job["company"],
-        "status": "applied", "detail": "ok",
-    })
+    monkeypatch.setattr(agent, "search_plan_jobs", lambda plan, run_id=None: jobs)
+    monkeypatch.setattr(
+        agent,
+        "apply_to_job",
+        lambda job, resume: {
+            "job_id": job["id"],
+            "job_title": job["title"],
+            "company": job["company"],
+            "status": "applied",
+            "detail": "ok",
+        },
+    )
     monkeypatch.setattr(agent, "send_job_alert_email", lambda *a, **k: None)
 
     result = run_job_hunter(str(sample_pdf), agent=create_agent(llm=FakeLLM()))
