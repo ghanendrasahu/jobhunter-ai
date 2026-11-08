@@ -13,6 +13,7 @@ import hashlib
 import io
 import json
 import logging
+import os
 import shutil
 import sqlite3
 import webbrowser
@@ -35,31 +36,11 @@ def _db_path() -> Path:
     return Path(HISTORY_DIR) / "history.db"
 
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS resumes (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    file_path TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    modified_at TEXT NOT NULL,
-    text_preview TEXT DEFAULT ''
-);
-CREATE TABLE IF NOT EXISTS histories (
-    resume_id TEXT PRIMARY KEY,
-    applied_job_ids TEXT NOT NULL DEFAULT '[]',
-    applied_jobs TEXT NOT NULL DEFAULT '[]',
-    last_updated TEXT NOT NULL DEFAULT ''
-);
-"""
-
-
 def _connect() -> sqlite3.Connection:
     """Open a connection, ensure the schema exists, and migrate legacy JSON."""
-    Path(HISTORY_DIR).mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(_db_path()))
-    conn.row_factory = sqlite3.Row
-    with conn:
-        conn.executescript(_SCHEMA)
+    from jobhunter.storage.schema import connect_with_recovery
+
+    conn = connect_with_recovery(_db_path())
     _migrate_legacy_json(conn)
     return conn
 
@@ -147,7 +128,18 @@ def save_resume(file_path: str, name: str = "") -> dict:
 
     RESUMES_DIR.mkdir(parents=True, exist_ok=True)
     dest = RESUMES_DIR / f"{rid}.pdf"
-    shutil.copy2(file_path, dest)
+    # Atomic copy: stage in a temp file in the same directory, then rename.
+    # A crash mid-copy can never leave a half-written resume on disk.
+    tmp_dest = dest.with_name(f"{dest.name}.tmp-{os.getpid()}")
+    try:
+        shutil.copy2(file_path, tmp_dest)
+        os.replace(tmp_dest, dest)
+    except BaseException:
+        try:
+            tmp_dest.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
     now = datetime.now().isoformat()
     metadata = {
@@ -188,15 +180,17 @@ def list_resumes() -> list[dict]:
 
     resumes: list[dict] = []
     for row in rows:
-        resumes.append({
-            "id": row["id"],
-            "name": row["name"],
-            "file_path": row["file_path"],
-            "created_at": row["created_at"],
-            "modified_at": row["modified_at"],
-            "text": row["text_preview"],
-            "applied_count": len(get_history_by_resume_id(row["id"]).get("applied_job_ids", [])),
-        })
+        resumes.append(
+            {
+                "id": row["id"],
+                "name": row["name"],
+                "file_path": row["file_path"],
+                "created_at": row["created_at"],
+                "modified_at": row["modified_at"],
+                "text": row["text_preview"],
+                "applied_count": len(get_history_by_resume_id(row["id"]).get("applied_job_ids", [])),
+            }
+        )
     return resumes
 
 
@@ -273,8 +267,8 @@ def save_history(resume_id: str, job_ids: set[str], job_details: list[dict]) -> 
                 "last_updated=excluded.last_updated",
                 (
                     resume_id,
-                    json.dumps(sorted(existing_ids)),
-                    json.dumps(existing_details),
+                    json.dumps(sorted(existing_ids), sort_keys=True),
+                    json.dumps(existing_details, sort_keys=True),
                     datetime.now().isoformat(),
                 ),
             )
@@ -328,19 +322,23 @@ def list_all_histories() -> list[dict]:
     """Return every stored application history."""
     conn = _connect()
     try:
-        rows = conn.execute("SELECT resume_id, applied_job_ids, applied_jobs, last_updated FROM histories").fetchall()
+        rows = conn.execute(
+            "SELECT resume_id, applied_job_ids, applied_jobs, last_updated FROM histories"
+        ).fetchall()
     finally:
         conn.close()
 
     histories: list[dict] = []
     for row in rows:
         try:
-            histories.append({
-                "resume_id": row["resume_id"],
-                "applied_job_ids": json.loads(row["applied_job_ids"] or "[]"),
-                "applied_jobs": json.loads(row["applied_jobs"] or "[]"),
-                "last_updated": row["last_updated"],
-            })
+            histories.append(
+                {
+                    "resume_id": row["resume_id"],
+                    "applied_job_ids": json.loads(row["applied_job_ids"] or "[]"),
+                    "applied_jobs": json.loads(row["applied_jobs"] or "[]"),
+                    "last_updated": row["last_updated"],
+                }
+            )
         except json.JSONDecodeError:
             logger.debug("Skipping malformed history row for %s", row["resume_id"])
     return histories
@@ -370,15 +368,17 @@ def export_history_csv(resume_text: str | None = None) -> str:
 
     for history in histories:
         for job in history.get("applied_jobs", []):
-            writer.writerow([
-                job.get("job_id", ""),
-                job.get("title", ""),
-                job.get("company", ""),
-                job.get("source", ""),
-                job.get("url", ""),
-                job.get("applied_at", ""),
-                job.get("status", "applied"),
-            ])
+            writer.writerow(
+                [
+                    job.get("job_id", ""),
+                    job.get("title", ""),
+                    job.get("company", ""),
+                    job.get("source", ""),
+                    job.get("url", ""),
+                    job.get("applied_at", ""),
+                    job.get("status", "applied"),
+                ]
+            )
         for jid in history.get("applied_job_ids", []):
             if not any(job.get("job_id") == jid for job in history.get("applied_jobs", [])):
                 writer.writerow([jid, "", "", "", "", "", "applied"])
@@ -434,14 +434,22 @@ def apply_to_job(job: dict, resume_text: str) -> dict:
             logger.warning("Failed to open browser: %s", exc)
 
     status = "opened" if is_portal else "recorded"
-    detail = "🔗 Portal link opened in your browser — apply manually." if is_portal else "Job recorded — open the link to apply manually."
+    detail = (
+        "🔗 Portal link opened in your browser — apply manually."
+        if is_portal
+        else "Job recorded — open the link to apply manually."
+    )
 
-    record_application_outcome(resume_text, job, {
-        "job_id": job_id,
-        "status": status,
-        "detail": detail,
-        "evaluation": {"score": job.get("match_score")},
-    })
+    record_application_outcome(
+        resume_text,
+        job,
+        {
+            "job_id": job_id,
+            "status": status,
+            "detail": detail,
+            "evaluation": {"score": job.get("match_score")},
+        },
+    )
 
     return {
         "job_id": job_id,

@@ -8,7 +8,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Project root: the src/ layout (parents[2] of src/jobhunter/config.py), or an
@@ -53,7 +53,7 @@ class Settings(BaseSettings):
 
     # SMTP email notifications (optional)
     smtp_host: str = ""
-    smtp_port: int = 587
+    smtp_port: int = Field(default=587, ge=1, le=65535)
     smtp_user: str = ""
     smtp_pass: str = ""
     notification_email: str = ""
@@ -102,7 +102,7 @@ class Settings(BaseSettings):
     #   human — pre-fill forms for supported portals; the user completes & submits.
     #   auto  — additionally click submit when nothing is missing (PH5/PH6 gates still apply).
     pipeline_apply_mode: Literal["off", "human", "auto"] = "off"
-    max_applications_per_run: int = 5
+    max_applications_per_run: int = Field(default=5, ge=1)
     headless_browser: bool = False
     browser_state_dir: Path = PROJECT_ROOT / "data" / "browser_state"
     # Browser channel: "chrome" reuses your installed Chrome (best fingerprint).
@@ -123,21 +123,21 @@ class Settings(BaseSettings):
     # Directory for the dedicated JobHunter Chrome profile.
     browser_profile_dir: Path = PROJECT_ROOT / "data" / "browser_state" / "automation_profile"
     # Remote-debugging port used by the dedicated JobHunter Chrome.
-    browser_debug_port: int = 9222
+    browser_debug_port: int = Field(default=9222, ge=1, le=65535)
     # Optional explicit CDP endpoint override (e.g. http://127.0.0.1:9222).
     # When set, the agent connects to that already-running browser instead of
     # launching the dedicated one.
     browser_cdp_url: str = ""
     # Seconds to wait for a manual login in the opened browser window.
-    manual_login_timeout: int = 180
+    manual_login_timeout: int = Field(default=180, ge=0)
     # Only consider fresher/entry-level roles (filters out senior listings).
     fresher_only: bool = True
     # Jobs requiring more than this many years of experience are skipped.
-    max_experience_years: int = 2
+    max_experience_years: int = Field(default=2, ge=0, le=10)
     # Continuous mode: applications per cycle before the cooldown pause.
-    batch_size: int = 10
+    batch_size: int = Field(default=10, ge=1)
     # Continuous mode: seconds to wait between cycles (avoid rate-limit bans).
-    cooldown_seconds: int = 300
+    cooldown_seconds: int = Field(default=300, ge=0)
     # Rank remote/WFH jobs above office jobs of equal quality.
     prioritize_remote: bool = True
     # Query suffixes rotated across continuous-mode cycles (comma-separated).
@@ -145,31 +145,31 @@ class Settings(BaseSettings):
     # Search-plan locations swept for primary queries (comma-separated).
     search_locations: str = "India,Bengaluru,Remote,Hybrid"
     # How many result pages to walk through per query in a cycle.
-    paginate_depth: int = 3
+    paginate_depth: int = Field(default=3, ge=0)
 
     # Full job-description refresh (PHASE 1A): when enabled, jobs whose result
     # snippet is too thin trigger a full-page fetch of the job description.
     fetch_full_descriptions: bool = False
     # Max number of full-description pages fetched per search.
-    fetch_full_description_max: int = 5
+    fetch_full_description_max: int = Field(default=5, ge=1)
 
     # Runtime performance tuning
     # Max planned queries searched concurrently (browser-heavy sources: keep low).
-    search_max_concurrency: int = 2
+    search_max_concurrency: int = Field(default=2, ge=1)
     # Max threads used to run LLM relevance refinement in parallel.
-    score_max_workers: int = 4
+    score_max_workers: int = Field(default=4, ge=1)
     # Hard per-source timeout in seconds; a source that exceeds it is treated
     # as failed for this run and never blocks the other sources.
-    source_timeout_seconds: float = 45.0
+    source_timeout_seconds: float = Field(default=45.0, gt=0)
     # Bounded retries for navigation/browser operations.
-    retry_max_attempts: int = 3
-    retry_backoff_seconds: float = 2.0
+    retry_max_attempts: int = Field(default=3, ge=1, le=10)
+    retry_backoff_seconds: float = Field(default=2.0, ge=0)
 
     # Runtime paths and limits
     upload_dir: Path = PROJECT_ROOT / "uploads"
     history_dir: Path = PROJECT_ROOT / "history"
     resumes_dir: Path = PROJECT_ROOT / "resumes"
-    max_file_size_mb: int = 10
+    max_file_size_mb: int = Field(default=10, ge=1)
 
     @property
     def max_upload_bytes(self) -> int:
@@ -266,6 +266,32 @@ def missing_api_keys() -> list[str]:
         ("JOOBLE_API_KEY", bool(settings.jooble_api_key)),
     ]
     return [name for name, present in checks if not present]
+
+
+def validate_config(settings: Settings | None = None) -> list[str]:
+    """Cross-field configuration problems (never raises).
+
+    Only actionable misconfigurations are reported — missing optional keys are
+    a warning concern (:func:`warn_missing_keys`), not a problem.
+    """
+    s = settings or get_settings()
+    problems: list[str] = []
+    if s.adzuna_app_id and not s.adzuna_api_key:
+        problems.append("ADZUNA_APP_ID is set but ADZUNA_API_KEY is missing (Adzuna is disabled).")
+    if s.adzuna_api_key and not s.adzuna_app_id:
+        problems.append("ADZUNA_API_KEY is set but ADZUNA_APP_ID is missing (Adzuna is disabled).")
+    if s.smtp_host and not s.smtp_user:
+        problems.append("SMTP_HOST is set but SMTP_USER is missing (email notifications disabled).")
+    if s.smtp_user and not s.smtp_pass:
+        problems.append("SMTP_USER is set but SMTP_PASS is missing (email notifications disabled).")
+    if s.smtp_host and not s.notification_email:
+        problems.append("SMTP_HOST is set but NOTIFICATION_EMAIL is missing (alerts go nowhere).")
+    secret = s.jobhunter_app_secret.get_secret_value()
+    if secret and len(secret) < 16:
+        problems.append("JOBHUNTER_APP_SECRET is shorter than 16 characters — use 32+ random bytes.")
+    if s.manual_login_timeout < 30:
+        problems.append("MANUAL_LOGIN_TIMEOUT below 30s may not be enough to log in manually.")
+    return problems
 
 
 def warn_missing_keys(prefix: str = "JobHunter") -> None:

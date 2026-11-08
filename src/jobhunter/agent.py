@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from typing import Any, TypedDict, cast
 
-from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 from pydantic import SecretStr
@@ -19,8 +18,6 @@ from jobhunter.domains.search.engine import search_plan_jobs
 from jobhunter.domains.search.plan import build_search_plan
 from jobhunter.services.notifications import send_job_alert_email
 from jobhunter.storage.history import apply_to_job
-
-load_dotenv()
 
 logger = logging.getLogger(__name__)
 

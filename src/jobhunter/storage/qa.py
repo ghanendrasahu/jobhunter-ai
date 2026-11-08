@@ -23,19 +23,9 @@ def _db_path() -> Path:
 
 
 def _connect() -> sqlite3.Connection:
-    Path(HISTORY_DIR).mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(_db_path()))
-    conn.row_factory = sqlite3.Row
-    with conn:
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS qa_answers ("
-            " intent TEXT PRIMARY KEY,"
-            " answer TEXT NOT NULL,"
-            " source TEXT NOT NULL,"
-            " confirmed_at TEXT NOT NULL"
-            ")"
-        )
-    return conn
+    from jobhunter.storage.schema import connect_with_recovery
+
+    return connect_with_recovery(_db_path())
 
 
 def save_answer(intent: str, answer: str, source: str = "user") -> None:

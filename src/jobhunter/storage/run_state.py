@@ -32,57 +32,14 @@ logger = logging.getLogger(__name__)
 
 HISTORY_DIR: Path = get_settings().history_dir
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS runs (
-    run_id TEXT PRIMARY KEY,
-    origin TEXT NOT NULL DEFAULT '',
-    resume_id TEXT NOT NULL DEFAULT '',
-    query TEXT NOT NULL DEFAULT '',
-    mode TEXT NOT NULL DEFAULT '',
-    portals TEXT NOT NULL DEFAULT '[]',
-    started_at TEXT NOT NULL,
-    finished_at TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'running',
-    summary_json TEXT NOT NULL DEFAULT '{}'
-);
-CREATE TABLE IF NOT EXISTS run_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id TEXT NOT NULL,
-    ts TEXT NOT NULL,
-    level TEXT NOT NULL,
-    stage TEXT NOT NULL,
-    message TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_run_events_run_id ON run_events (run_id);
-CREATE TABLE IF NOT EXISTS run_source_metrics (
-    run_id TEXT NOT NULL,
-    source TEXT NOT NULL,
-    found INTEGER NOT NULL DEFAULT 0,
-    failed INTEGER NOT NULL DEFAULT 0,
-    duration_ms INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (run_id, source)
-);
-CREATE TABLE IF NOT EXISTS submission_attempts (
-    resume_id TEXT NOT NULL,
-    job_id TEXT NOT NULL,
-    url TEXT NOT NULL DEFAULT '',
-    attempted_at TEXT NOT NULL,
-    PRIMARY KEY (resume_id, job_id)
-);
-"""
-
-
 def _db_path() -> Path:
     return Path(HISTORY_DIR) / "history.db"
 
 
 def _connect() -> sqlite3.Connection:
-    Path(HISTORY_DIR).mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(_db_path()))
-    conn.row_factory = sqlite3.Row
-    with conn:
-        conn.executescript(_SCHEMA)
-    return conn
+    from jobhunter.storage.schema import connect_with_recovery
+
+    return connect_with_recovery(_db_path())
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +68,7 @@ def start_run(
                         resume_id,
                         query,
                         mode,
-                        json.dumps(portals or []),
+                        json.dumps(portals or [], sort_keys=True),
                         datetime.now().isoformat(),
                     ),
                 )
@@ -155,7 +112,7 @@ def finish_run(run_id: str, status: str, summary: dict | None = None) -> None:
             with conn:
                 conn.execute(
                     "UPDATE runs SET status = ?, finished_at = ?, summary_json = ? WHERE run_id = ?",
-                    (status, datetime.now().isoformat(), json.dumps(summary or {}), run_id),
+                    (status, datetime.now().isoformat(), json.dumps(summary or {}, sort_keys=True), run_id),
                 )
         finally:
             conn.close()

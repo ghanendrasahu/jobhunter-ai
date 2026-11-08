@@ -6,7 +6,6 @@ import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 
-from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -15,10 +14,8 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from jobhunter.agent import run_job_hunter
-from jobhunter.config import Settings, get_settings
+from jobhunter.config import Settings, get_settings, validate_config
 from jobhunter.logging_setup import configure_logging
-
-load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -177,12 +174,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except OSError as exc:
             logger.exception("Readiness probe failed: upload dir unusable")
             problems.append(f"upload dir unusable: {exc}")
+        warnings = validate_config(settings)
+        for warning in warnings:
+            logger.warning("Configuration: %s", warning)
         if problems:
             return JSONResponse(
                 status_code=503,
-                content={"status": "unavailable", "problems": problems},
+                content={"status": "unavailable", "problems": problems, "warnings": warnings},
             )
-        return JSONResponse(content={"status": "ready", "version": app.version})
+        return JSONResponse(content={"status": "ready", "version": app.version, "warnings": warnings})
 
     return app
 

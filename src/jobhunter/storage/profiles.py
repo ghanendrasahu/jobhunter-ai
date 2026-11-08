@@ -21,17 +21,9 @@ def _db_path() -> Path:
 
 
 def _connect() -> sqlite3.Connection:
-    Path(HISTORY_DIR).mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(_db_path()))
-    conn.row_factory = sqlite3.Row
-    with conn:
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS profile_store ("
-            " key TEXT PRIMARY KEY,"
-            " value TEXT NOT NULL"
-            ")"
-        )
-    return conn
+    from jobhunter.storage.schema import connect_with_recovery
+
+    return connect_with_recovery(_db_path())
 
 
 def save_profile(profile: dict) -> None:
@@ -84,7 +76,7 @@ def _save(key: str, value: object) -> None:
             conn.execute(
                 "INSERT INTO profile_store (key, value) VALUES (?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (key, json.dumps(value)),
+                (key, json.dumps(value, sort_keys=True, separators=(",", ":"))),
             )
     finally:
         conn.close()

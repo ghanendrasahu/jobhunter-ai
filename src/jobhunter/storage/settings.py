@@ -46,18 +46,10 @@ def _db_path() -> Path:
 
 
 def _connect() -> sqlite3.Connection:
-    """Open a connection and ensure the settings table exists."""
-    Path(HISTORY_DIR).mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(_db_path()))
-    conn.row_factory = sqlite3.Row
-    with conn:
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS settings ("
-            " key TEXT PRIMARY KEY,"
-            " value TEXT NOT NULL"
-            ")"
-        )
-    return conn
+    """Open a connection and ensure the schema exists."""
+    from jobhunter.storage.schema import connect_with_recovery
+
+    return connect_with_recovery(_db_path())
 
 
 def _fernet() -> Fernet | None:
