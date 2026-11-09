@@ -67,9 +67,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             logger.exception("Could not ensure upload directory: %s", settings.upload_dir)
         yield
 
+    from jobhunter import __version__
+
     app = FastAPI(
         title="JobHunter AI Agent",
-        version="3.0.0",
+        version=__version__,
         description="Upload a PDF resume to automatically search and apply for matching jobs.",
         lifespan=lifespan,
     )

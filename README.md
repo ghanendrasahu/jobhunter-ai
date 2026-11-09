@@ -20,10 +20,11 @@ dashboard**, a **FastAPI REST endpoint**, and a **CLI**.
 
 - 📄 **PDF resume parsing** (`pypdf`)
 - 🤖 **AI search-query generation** via LangChain + OpenAI (with keyword fallback)
+- 🛡️ **Deterministic eligibility (PH5) before relevance ranking (PH6)** — a hard gate no LLM can override
 - 🔍 **Multi-source job discovery** — Indeed, LinkedIn, Naukri (Playwright), Adzuna & Jooble (APIs), plus one-click portal links
 - 🎯 **Resume–job match scoring** with matched/missing skill breakdown
 - 📝 **Application tracking** with duplicate detection and history export (CSV)
-- 📊 **Analytics dashboard** (Streamlit + Plotly)
+- 📊 **Analytics dashboard** (Streamlit + Plotly) with run metrics and an errors & warnings view
 - 🔐 **Optional REST API** with API-key auth and rate limiting
 - 📧 **Email notifications** after each pipeline run (optional)
 - 🤖 **Semi-autonomous apply agent** — logs into Naukri/Indeed, scores jobs with Groq, and auto-fills application forms (human-in-the-loop or full-auto)
@@ -42,31 +43,43 @@ dashboard**, a **FastAPI REST endpoint**, and a **CLI**.
                 │  uvicorn jobhunter.api:app│  REST API
                 └────────────┬──────────────┘
                              ▼
-                ┌───────────────────────────┐
+                ┌────────────┬──────────────┐
                 │   jobhunter.agent         │  LangGraph pipeline
-                │  extract → query → search → apply
+                │  extract → query →        │
+                │  discover → PH5 → PH6    │
+                │  → apply                  │
                 └──────┬────────────────────┘
                        │
         ┌──────────────┼───────────────────────────┐
         ▼              ▼                           ▼
 ┌──────────────┐ ┌──────────────┐        ┌──────────────────┐
-│ domains/     │ │ domains/search/*│      │ storage/history  │
-│ resume       │ │ portals      │        │ services/analytics
-│ matching     │ │ scrapers     │        │ services/notifications
-└──────────────┘ │ api_sources  │        └──────────────────┘
-                 │ engine       │
-                 └──────────────┘
+│ domains/     │ │ domains/search/*│      │ storage/         │
+│ resume       │ │ portals      │        │ history (SQLite) │
+│ eligibility  │ │ scrapers     │        │ profiles         │
+│ (PH5 gate)   │ │ api_sources  │        │ run_state        │
+│ scoring      │ │ engine       │        │ qa memory, settings│
+│ (PH6 ranking)│ └──────────────┘        └──────────────────┘
+│ jobs/candidate│
+└──────────────┘
 ```
 
 ### Pipeline steps
 
 1. **extract_resume** — parse the PDF into plain text (`domains/resume.py`)
 2. **generate_query** — ask the LLM for a concise search query; fall back to keyword extraction
-3. **find_jobs** — search scrapers + APIs + portal links, then score each job against the resume
-4. **apply_jobs** — record applications (portal links open in the browser), send a summary email
+3. **find_jobs** — portal links + registered sources + optional job APIs, deduplicated
+4. **build_candidate** — Candidate knowledge (role family, skills, seniority, experience)
+5. **assess_eligibility** — **PH5 HARD GATE**: deterministic eligibility per job (LLM can never override it)
+6. **score_jobs** — **PH6 relevance ranking** (deterministic + optional LLM refinement); only eligible jobs are scored
+7. **apply_jobs** — consume the PH6-ranked eligible jobs: `off` (default) records/opens; opt-in `human`/`auto` applies via the apply agent — capped, deduplicated, verified
 
-Each node is wrapped in `try/except` and sets an `error` field on failure, which short-circuits
-the downstream nodes.
+Safety invariants (enforced in code, see `docs/safety.md`):
+
+- PH5 eligibility runs before PH6; failing jobs are dropped before scoring.
+- LLM scores never override eligibility; unknown knowledge goes to `needs_review`.
+- Discovery-only sources and unsupported portals never auto-apply.
+- Auto-apply runs only in the dedicated authenticated browser; a failed browser refuses the run.
+- Nothing is recorded as applied without post-click verification; everything is recorded in `history/history.db`.
 
 ---
 
@@ -76,68 +89,35 @@ the downstream nodes.
 JobHunter AI/
 ├── src/
 │   └── jobhunter/             # Main package (src layout)
-│       ├── __init__.py
-│       ├── __main__.py        # python -m jobhunter (CLI)
-│       ├── config.py          # pydantic-settings (env/.env)
-│       ├── agent.py           # LangGraph pipeline + run_job_hunter()
-│       ├── logging_setup.py   # logging config (text or single-line JSON)
+│       ├── __init__.py        # __version__ (single source of truth)
+│       ├── __main__.py        # python -m jobhunter
+│       ├── config.py          # pydantic-settings (env/.env) + validate_config
+│       ├── agent.py           # LangGraph pipeline (extract→query→discover→PH5→PH6→apply)
 │       ├── cli.py             # CLI entry point
 │       ├── web.py             # Streamlit launcher
 │       ├── scheduler.py       # scheduled/background runner
+│       ├── logging_setup.py   # text or single-line JSON logs
 │       ├── domains/
+│       │   ├── jobs.py        # normalized Job + dedupe fingerprint
+│       │   ├── eligibility.py # PH5 hard gate (deterministic)
+│       │   ├── scoring.py     # PH6 relevance ranking
+│       │   ├── candidate.py   # Candidate knowledge (persisted)
 │       │   ├── resume.py      # PDF text extraction
-│       │   ├── matching.py    # job/resume match scoring
-│       │   └── search/
-│       │       ├── portals.py # portal link generation
-│       │       ├── scrapers.py# Playwright scrapers (Indeed/LinkedIn/Naukri)
-│       │       ├── api_sources.py  # Adzuna, Jooble & JSearch APIs
-│       │       └── engine.py  # search orchestration + dedupe
-│       ├── storage/
-│       │   ├── history.py     # resume storage + application history + CSV
-│       │   ├── settings.py    # SQLite-persisted UI settings
-│       │   └── profiles.py    # SQLite profile + selected/suggested roles
-│       ├── services/
-│       │   ├── analytics.py   # dashboard aggregation
-│       │   └── notifications.py  # SMTP email alerts
-│       ├── automation/        # semi-autonomous apply agent
-│       │   ├── browser.py, evaluator.py, form_filler.py,
-│       │   ├── profile.py, strategies.py, roles.py, prioritizer.py,
-│       │   ├── apply_agent.py, apply.py
-│       ├── api/
-│       │   └── server.py      # FastAPI app factory
-│       └── ui/
-│           ├── dashboard.py   # Streamlit app shell + sidebar
-│           ├── components.py  # shared rendering (CSS, job cards, results)
-│           └── views.py       # page views (search, auto-apply, settings, analytics, …)
-├── tests/                     # pytest suite
-│   ├── conftest.py            # fixtures + minimal PDF generator
-│   ├── test_pdf.py
-│   ├── test_matcher.py
-│   ├── test_history.py
-│   ├── test_search.py
-│   ├── test_agent.py
-│   ├── test_api.py
-│   ├── test_scheduler.py
-│   ├── test_automation.py
-│   ├── test_profile.py        # resume profile extraction
-│   ├── test_config.py         # settings + missing-key warnings
-│   ├── test_settings.py       # SQLite settings store
-│   ├── test_services.py       # analytics + email notifications
-│   ├── test_api_sources.py    # Adzuna / Jooble / JSearch
-│   ├── test_strategies.py     # portal strategies + posted/salary extraction
-│   ├── test_browser.py        # minimal profile copy
-│   ├── test_roles.py          # role discovery, priority tiers, job prioritizer
-│   ├── test_profiles.py       # profile + selected/suggested roles store
-│   └── test_browser_preflight.py  # missing-browser error
+│       │   └── search/        # portals / scrapers / api_sources / engine / sources/
+│       ├── storage/           # history, settings, profiles, qa, run_state, schema
+│       ├── services/          # analytics, notifications, retry
+│       ├── automation/        # apply agent: browser, strategies, form_filler,
+│       │                      # evaluator, apply_agent, apply_contract (routing gate)
+│       ├── api/server.py      # FastAPI app factory (+ /ready readiness probe)
+│       └── ui/                # dashboard, views, control_center, state, components, design
+├── tests/                     # pytest suite (550+ tests; see pyproject.toml)
+├── docs/                      # configuration / browser-setup / safety guides
+├── run.ps1                    # Windows launcher (dashboard default; -Menu utility menu)
 ├── pyproject.toml             # deps, console scripts, pytest/ruff/mypy config
-├── requirements.txt           # flat runtime pins
-├── requirements-dev.txt       # flat dev pins (tests, ruff, mypy)
 ├── uv.lock                    # locked dependency resolution (uv)
-├── docker-compose.yml         # Containerized Streamlit service
-├── Dockerfile
-├── .github/workflows/ci.yml   # lint + type-check + tests (coverage ≥ 60%)
-├── .env.example
-└── .gitignore
+├── Dockerfile, docker-compose.yml
+├── .env.example               # every setting, documented
+└── .github/workflows/ci.yml   # lint + type-check + tests (coverage gate ≥ 60%)
 ```
 
 ---
@@ -149,6 +129,15 @@ JobHunter AI/
 - Python 3.11 (only 3.11.x is supported)
 - (Optional) An [OpenAI API key](https://platform.openai.com/api-keys) for AI query generation
 - (Optional) Playwright browser: `python -m playwright install chromium`
+
+### One-command quick start (Windows)
+
+```powershell
+.\run.ps1                 # sync deps + open the dashboard on http://localhost:8501
+.\run.ps1 -Service api    # or the FastAPI server on :8000
+.\run.ps1 -Service cli    # or the interactive CLI
+.\run.ps1 -Menu           # utility menu: tests + coverage, ruff, mypy, browser install
+```
 
 ### Setup
 
@@ -168,7 +157,18 @@ cp .env.example .env
 # add OPENAI_API_KEY and optional job-API / SMTP keys
 ```
 
+### First run (dashboard, 5 minutes)
+
+1. `uv sync --locked`
+2. `cp .env.example .env` — works empty; add keys only if you want them
+3. `uv run jobhunter-web` and open http://localhost:8501
+4. Upload your resume PDF on **Job Search** → **Run job search**
+5. Review results (eligibility → relevance → applications). By default nothing is auto-submitted — `AUTO_APPLY_MODE=human` is the default and leaves the final click to you.
+
+For the Auto Apply page you also need the dedicated Chrome window — see `docs/browser-setup.md`. Safety model, what never happens, and known limitations: `docs/safety.md`. The full configuration reference: `docs/configuration.md`.
+
 ### Run the CLI
+
 
 ```bash
 python -m jobhunter                         # interactive prompt
@@ -217,7 +217,19 @@ values keep loading and re-encrypt the next time you save them.
 
 ---
 
-## Security & operations
+## Safety & operations
+
+The full behavior contract, outcome semantics, crash-safety guarantees and known limitations are
+documented in [`docs/safety.md`](docs/safety.md). Browser setup and the login workflow are in
+[`docs/browser-setup.md`](docs/browser-setup.md). Highlights:
+
+- **PH5 eligibility gate** runs before any scoring; PH5 can never be overridden (not by an LLM, not by configuration).
+- **Discovery-only sources and unsupported portals never auto-apply.**
+- **No unsafe fallback**: the auto-apply path requires the dedicated authenticated browser; it is refused otherwise.
+- **Verified outcomes only**: `submitted` is recorded only after post-click verification; crashes never produce duplicate applications.
+- **Sensitive fields are never auto-filled** (password, OTP, CAPTCHA, legal/demographic questions) — the agent always stops and asks you.
+- Every application is explainable: eligibility → relevance → route → outcome.
+
 
 - **API auth** — optional `X-API-Key` requirement via `JOBHUNTER_API_KEY`
 - **Rate limiting** — slowapi, default `20/minute` (`API_RATE_LIMIT`)
@@ -268,8 +280,17 @@ The agent:
 >    `INDEED_EMAIL/INDEED_PASSWORD`). The agent logs in through the portal's own
 >    form (no Google sign-in, so Google never blocks it), applies from your
 >    account, and confirmation emails land in the email on that account.
-> 2. **Default-Chrome sessions** — the agent copies a minimal slice of your Chrome
->    profile and reuses all existing logins automatically.
+> 2. **Dedicated JobHunter browser** (preferred) — the agent opens and reuses its own
+>    Chrome window (`data/browser_state/automation_profile/`) with a remote-debugging
+>    port. Log in to Naukri/Indeed once in that window; sessions persist, and your real
+>    Chrome profile is never touched or closed. If you'd rather manage Chrome yourself,
+>    set `BROWSER_CDP_URL=http://localhost:9222` to attach to an already-running instance.
+>
+> The legacy "copy a slice of your default Chrome profile" path is a **discovery aid
+> only** — auto-apply explicitly refuses it (a logged-out copy can never silently
+> receive applications); the apply agent requires the dedicated browser or CDP.
+>
+> Full details, ports, CDP setup, and the login workflow: `docs/browser-setup.md`.
 >
 > Install the browser engine once: `python -m playwright install chromium`
 > Portals block automation aggressively. Start in `human` mode and keep volume low to avoid account bans; a company confirmation email only arrives after a *real* submission.
@@ -278,43 +299,21 @@ The agent:
 
 ## Configuration
 
-| Environment variable               | Required   | Description                                                                                  |
-| ---------------------------------- | ---------- | -------------------------------------------------------------------------------------------- |
-| `OPENAI_API_KEY`                   | No*        | Enables LLM query generation (keyword fallback otherwise)                                    |
-| `OPENAI_MODEL`                     | No         | Chat model used for query generation (`gpt-4o-mini`)                                         |
-| `GROQ_API_KEY`                     | No*        | Prefer Groq over OpenAI when set (OpenAI-compatible, free tier)                              |
-| `GROQ_MODEL`                       | No         | Groq model used when `GROQ_API_KEY` is set (`openai/gpt-oss-20b`)                            |
-| `GROQ_BASE_URL`                    | No         | Groq endpoint (defaults to `https://api.groq.com/openai/v1`)                                 |
-| `ADZUNA_APP_ID`                    | No         | Adzuna API app ID (live job search)                                                          |
-| `ADZUNA_API_KEY`                   | No         | Adzuna API key                                                                               |
-| `JOOBLE_API_KEY`                   | No         | Jooble API key                                                                               |
-| `SMTP_HOST` / `SMTP_PORT`          | No         | SMTP settings for email alerts                                                               |
-| `SMTP_USER` / `SMTP_PASS`          | No         | SMTP credentials (use an app password for Gmail)                                             |
-| `NOTIFICATION_EMAIL`               | No         | Recipient for pipeline reports                                                               |
-| `JOBHUNTER_API_KEY`                | No         | If set, REST clients must send `X-API-Key` header                                            |
-| `API_RATE_LIMIT`                   | No         | FastAPI rate limit (default `20/minute`)                                                     |
-| `MAX_FILE_SIZE_MB`                 | No         | Max PDF upload size (default `10`)                                                           |
-| `CORS_ORIGINS`                     | No         | Comma-separated browser origins allowed via CORS (empty = same-origin only)                  |
-| `JOBHUNTER_APP_SECRET`             | No         | Encrypts persisted portal credentials at rest (empty = plaintext storage)                    |
-| `LOG_JSON`                         | No         | Emit application logs as single-line JSON (default: human-readable)                          |
-| `NAUKRI_EMAIL` / `NAUKRI_PASSWORD` | No         | Naukri login for the apply agent (optional — manual login in browser window)                 |
-| `INDEED_EMAIL` / `INDEED_PASSWORD` | No         | Indeed login for the apply agent (optional — manual login in browser window)                 |
-| `AUTO_APPLY_MODE`                  | No         | `human` (pre-fill, user submits), `auto`, `off` (default `human`)                            |
-| `MAX_APPLICATIONS_PER_RUN`         | No         | Cap per run (default `5`)                                                                    |
-| `HEADLESS_BROWSER`                 | No         | Run the browser hidden (default `false`)                                                     |
-| `BROWSER_CHANNEL`                  | No         | `chrome` (installed Chrome, default) or `chromium` (bundled)                                 |
-| `BROWSER_USE_DEFAULT_PROFILE`      | No         | Reuse your default Chrome logins via an auto-refreshed minimal profile copy (default `true`) |
-| `BROWSER_USER_DATA_DIR`            | No         | Explicit Chrome 'User Data' dir (auto-detected when empty)                                   |
-| `MANUAL_LOGIN_TIMEOUT`             | No         | Seconds to wait for manual login (default `180`)                                             |
-| `FRESHER_ONLY`                     | No         | Fresher-only mode: augments the query, skips senior roles (default `true`)                   |
-| `MAX_EXPERIENCE_YEARS`             | No         | Jobs requiring more years than this are skipped (default `2`)                                |
-| `BATCH_SIZE`                       | No         | Applications per continuous-mode cycle (default `10`)                                        |
-| `COOLDOWN_SECONDS`                 | No         | Pause between continuous-mode cycles (default `300`)                                         |
-| `PRIORITIZE_REMOTE`                | No         | Give remote/WFH jobs a score boost (default `true`)                                          |
-| `SEARCH_MAX_CONCURRENCY`           | No         | Max planned queries searched in parallel (browser-heavy; default `2`)                        |
-| `SCORE_MAX_WORKERS`                | No         | Threads used for parallel LLM relevance scoring (default `4`)                                |
+The full reference (every variable, defaults, ranges, validation, recipes,
+schema versioning) lives in [`docs/configuration.md`](docs/configuration.md).
+Highlights:
 
-\* *The pipeline works fully without an OpenAI key — query generation falls back to keyword extraction.*
+| Environment variable | Default | Description |
+| --- | --- | --- |
+| `OPENAI_API_KEY` / `GROQ_API_KEY` | _(empty)_ | LLM provider; keyword fallback when unset |
+| `NAUKRI_EMAIL` / `NAUKRI_PASSWORD` | _(empty)_ | Naukri login for the apply agent (or manual login in the window) |
+| `INDEED_EMAIL` / `INDEED_PASSWORD` | _(empty)_ | Indeed login |
+| `AUTO_APPLY_MODE` | `human` | `human` (pre-fill, you submit), `auto`, `off` |
+| `PIPELINE_APPLY_MODE` | `off` | Pipeline opt-in: `off` = review only, `human`, `auto` |
+| `MAX_APPLICATIONS_PER_RUN` | `5` | Cap per run |
+| `JOBHUNTER_APP_SECRET` | _(empty)_ | Fernet secret for persisted credentials at rest |
+
+Environment variables are read from `.env`; the dashboard's persisted Settings override them.
 
 ---
 
@@ -332,7 +331,7 @@ Upload a PDF resume to run the pipeline.
 
 ### `GET /health`
 
-Liveness probe — returns `{"status": "ok", "version": "3.0.0"}`.
+Liveness probe — returns `{"status": "ok", "version": "<version>"}`.
 
 ### `GET /ready`
 
@@ -347,18 +346,18 @@ crash-loop.
 
 ```bash
 uv sync --locked
-uv run pytest
-# with coverage (matches CI, which fails below 60%):
-uv run pytest --cov=jobhunter --cov-report=term-missing --cov-fail-under=40
+uv run pytest                 # 550+ tests
+# with coverage (CI fails below 60%; actual: 76%):
+uv run pytest --cov=jobhunter --cov-report=term-missing --cov-fail-under=60
 ```
 
 Or with pip: `pip install -r requirements-dev.txt && python -m pytest --cov=jobhunter --cov-report=term-missing`
 
-Test coverage includes PDF extraction, match scoring, history/resume management, the SQLite
-settings & profile/roles stores, search orchestration & deduplication, the Adzuna/Jooble/JSearch
-API clients, the full LangGraph pipeline, portal strategies, role discovery & the job
-prioritizer, the minimal Chrome profile copy, browser preflight, the REST API (validation, auth,
-rate limiting), analytics aggregation, and SMTP notifications.
+Test coverage includes the full LangGraph pipeline and safety invariants, the apply agent
+(browser flows fully faked), eligibility & relevance gates, discovery sources, persistence
+(schema migrations, corruption recovery, round trips), run-state & crash idempotency, the REST
+API, the dashboard pages (headless AppTest), form filling, Q&A memory, the CLI and scheduler,
+and the minimal Chrome profile copy.
 
 ---
 
@@ -367,7 +366,7 @@ rate limiting), analytics aggregation, and SMTP notifications.
 - **Add a job API:** create a `search_*_jobs` function in `domains/search/api_sources.py` and call it from `domains/search/engine.py`
 - **Add a scraper:** follow the existing Playwright patterns in `domains/search/scrapers.py` and register it in `domains/search/engine.py`
 - **Use a different LLM:** swap the `ChatOpenAI` in `agent.py` for any LangChain chat model
-- **Real ATS submission:** replace `apply_to_job` in `storage/history.py` with an HTTP/Playwright submitter
+- **Real ATS submission:** extend the Naukri/Indeed strategies in `automation/strategies.py` (keep the human-in-the-loop and verification gates)
 
 ---
 

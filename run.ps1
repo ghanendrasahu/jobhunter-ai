@@ -3,8 +3,9 @@
     One-command runner for JobHunter AI (Windows).
 
 .DESCRIPTION
-    Installs dependencies (uv) and starts the app. Defaults to the Streamlit
-    dashboard; use -Service to pick the CLI, the REST API, or Docker instead.
+    Defaults to the Streamlit dashboard. -Service picks the CLI, the REST API,
+    or Docker instead. -Menu opens the interactive utility menu (install deps,
+    install the browser, tests + coverage, lint + mypy). Everything uses uv.
 
 .EXAMPLE
     .\run.ps1                      # sync deps + open the dashboard
@@ -12,6 +13,7 @@
     .\run.ps1 -Service cli         # sync deps + launch the interactive CLI
     .\run.ps1 -Service docker      # build + run via docker compose
     .\run.ps1 -Resume resume.pdf   # dashboard, plus run a PDF through the CLI
+    .\run.ps1 -Menu                # interactive utility menu
 #>
 
 [CmdletBinding()]
@@ -19,7 +21,8 @@ param(
     [ValidateSet("dashboard", "cli", "api", "docker")]
     [string]$Service = "dashboard",
     [string]$Resume = "",
-    [switch]$SkipSync
+    [switch]$SkipSync,
+    [switch]$Menu
 )
 
 $ErrorActionPreference = "Stop"
@@ -40,6 +43,45 @@ if (-not (Test-Path -LiteralPath ".env")) {
         Write-Host "  Edit .env and add your API keys (OPENAI_API_KEY etc.) as needed." -ForegroundColor Yellow
     }
 }
+
+# --- interactive utility menu (-Menu) ---------------------------------------
+function Show-Menu {
+    Clear-Host
+    Write-Host "============================================================" -ForegroundColor Yellow
+    Write-Host "  JobHunter AI - Utility Menu" -ForegroundColor White
+    Write-Host "============================================================" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  1) Sync dependencies (uv sync --locked)"
+    Write-Host "  2) Install Playwright browser (chromium)"
+    Write-Host "  3) Run the test suite + coverage"
+    Write-Host "  4) Ruff check"
+    Write-Host "  5) mypy (strict, src/)"
+    Write-Host "  6) Run the Streamlit dashboard"
+    Write-Host "  7) Run the FastAPI server"
+    Write-Host "  8) Run the CLI"
+    Write-Host "  0) Exit"
+    Write-Host ""
+    return Read-Host "Select option"
+}
+
+function Invoke-Menu {
+    while ($true) {
+        switch (Show-Menu) {
+            "1" { Write-Step "Syncing dependencies"; & uv sync --locked }
+            "2" { Write-Step "Installing Playwright chromium"; & uv run python -m playwright install chromium }
+            "3" { Write-Step "Running tests with coverage"; & uv run pytest --cov=jobhunter --cov-report=term-missing }
+            "4" { Write-Step "ruff check"; & uv run ruff check . }
+            "5" { Write-Step "mypy"; & uv run mypy src }
+            "6" { Write-Step "Starting dashboard"; & uv run jobhunter-web }
+            "7" { Write-Step "Starting FastAPI on :8000"; & uv run uvicorn jobhunter.api:app --reload --port 8000 }
+            "8" { Write-Step "Starting CLI"; & uv run python -m jobhunter }
+            "0" { Write-Host "Good bye!"; break }
+            default { Write-Host "Invalid choice - try again."; Start-Sleep -Seconds 1 }
+        }
+    }
+}
+
+if ($Menu) { Invoke-Menu; exit 0 }
 
 # --- install dependencies --------------------------------------------------
 if (-not $SkipSync) {
