@@ -216,6 +216,17 @@ def _fill_control(handle, profile: dict, resume_pdf: str | None, stats: FillStat
         return False
 
     text = _field_text(handle.page, handle)
+    # Sensitive / security controls are refused before anything else — the
+    # Q&A memory is never even consulted for them.
+    if is_skippable(
+        handle.get_attribute("id") or "",
+        handle.get_attribute("name") or "",
+        handle.get_attribute("placeholder") or "",
+        text,
+    ):
+        stats["skipped"] += 1
+        return False
+
     field = classify_field(
         handle.get_attribute("id") or "",
         handle.get_attribute("name") or "",
@@ -233,14 +244,6 @@ def _fill_control(handle, profile: dict, resume_pdf: str | None, stats: FillStat
                 and _fill_from_qa(handle, tag, response.answer)
             ):
                 return True
-        return False
-    if is_skippable(
-        handle.get_attribute("id") or "",
-        handle.get_attribute("name") or "",
-        handle.get_attribute("placeholder") or "",
-        text,
-    ):
-        stats["skipped"] += 1
         return False
 
     if tag == "SELECT":

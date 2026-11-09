@@ -25,8 +25,17 @@ _YEARS_RE = re.compile(r"(\d{1,2})\s*\+?\s*(?:years?|yrs?)", re.IGNORECASE)
 
 # Scalar candidate fields filled from profile / LLM.
 _STRING_FIELDS = (
-    "full_name", "email", "phone", "location", "remote_mode", "current_title",
-    "role_family", "current_ctc", "expected_ctc", "notice_period", "linkedin",
+    "full_name",
+    "email",
+    "phone",
+    "location",
+    "remote_mode",
+    "current_title",
+    "role_family",
+    "current_ctc",
+    "expected_ctc",
+    "notice_period",
+    "linkedin",
 )
 _LIST_FIELDS = ("projects", "certifications", "achievements")
 
@@ -63,19 +72,68 @@ def extract_candidate(resume_text: str, llm=None, profile: dict | None = None) -
     return candidate
 
 
+def _fill_candidate_gaps(candidate, saved) -> None:
+    """Overlay non-empty ``saved`` values onto empty fields of ``candidate``.
+
+    Fresh extraction always wins; the persisted knowledge only backfills
+    fields the resume could not tell us (skills, CTC, notice period, …).
+    """
+    for field in _CANDIDATE_SCALAR_FIELDS:
+        value = getattr(saved, field)
+        current = getattr(candidate, field)
+        if (current is None or current == "" or current == UNKNOWN_SENIORITY) and value not in (
+            None,
+            "",
+            UNKNOWN_SENIORITY,
+        ):
+            setattr(candidate, field, value)
+    if not candidate.skills and saved.skills:
+        candidate.skills = list(saved.skills)
+    if not candidate.skill_groups and saved.skill_groups:
+        candidate.skill_groups = dict(saved.skill_groups)
+    if not candidate.education and saved.education:
+        candidate.education = list(saved.education)
+    if not candidate.projects and saved.projects:
+        candidate.projects = list(saved.projects)
+    if not candidate.certifications and saved.certifications:
+        candidate.certifications = list(saved.certifications)
+    if not candidate.work_experience and saved.work_experience:
+        candidate.work_experience = list(saved.work_experience)
+
+
+_CANDIDATE_SCALAR_FIELDS = (
+    "full_name",
+    "email",
+    "phone",
+    "location",
+    "remote_mode",
+    "current_title",
+    "role_family",
+    "seniority",
+    "experience_years",
+    "current_ctc",
+    "expected_ctc",
+    "notice_period",
+    "linkedin",
+)
+
+
 def build_candidate(
     resume_text: str,
     llm=None,
     profile: dict | None = None,
     refresh: bool = False,
 ) -> Candidate:
-    """Return persisted candidate knowledge, re-extracting only when needed.
+    """Return candidate knowledge for ``resume_text``.
 
-    Uses the saved knowledge base when present (so values survive across runs);
-    pass ``refresh=True`` to force re-extraction from the resume. The result is
-    always persisted, keeping the store in sync with profile edits.
+    A non-empty resume is always authoritative — fresh extraction wins and
+    the persisted knowledge only backfills fields it could not provide.
+    The persisted knowledge base is used as the primary source only when
+    there is no resume text (so values survive across runs); pass
+    ``refresh=True`` to force re-extraction ignoring stored values entirely.
+    The result is always persisted.
     """
-    if not refresh:
+    if not (resume_text or "").strip():
         saved = load_candidate_knowledge()
         if saved:
             candidate = Candidate.from_dict(saved)
@@ -83,7 +141,12 @@ def build_candidate(
                 _apply_profile(candidate, profile)
             save_candidate_knowledge(candidate.to_dict())
             return candidate
+
     candidate = extract_candidate(resume_text, llm=llm, profile=profile)
+    if not refresh:
+        saved = load_candidate_knowledge()
+        if saved:
+            _fill_candidate_gaps(candidate, Candidate.from_dict(saved))
     save_candidate_knowledge(candidate.to_dict())
     return candidate
 
@@ -222,7 +285,7 @@ def _extract_with_llm(resume_text: str, llm) -> dict:
         response = llm.invoke(_LLM_EXTRACT_PROMPT.format(resume=resume_text[:8000]))
         content = _response_text(response)
         start, end = content.find("{"), content.rfind("}")
-        data = json.loads(content[start:end + 1]) if start >= 0 and end > start else {}
+        data = json.loads(content[start : end + 1]) if start >= 0 and end > start else {}
         if not isinstance(data, dict):
             return {}
         return _sanitise_llm_fields(data)
